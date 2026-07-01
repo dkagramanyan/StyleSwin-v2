@@ -13,6 +13,126 @@ This repo is the official implementation of "[StyleSwin: Transformer-based GAN f
 
 By [Bowen Zhang](http://home.ustc.edu.cn/~zhangbowen), [Shuyang Gu](http://home.ustc.edu.cn/~gsy777/), [Bo Zhang](https://bo-zhang.me/), [Jianmin Bao](https://jianminbao.github.io/), [Dong Chen](http://www.dongchen.pro/), [Fang Wen](https://www.microsoft.com/en-us/research/people/fangwen/), [Yong Wang](https://auto.ustc.edu.cn/2021/0510/c25976a484888/page.htm) and [Baining Guo](microsoft.com/en-us/research/people/bainguo/).
 
+---
+
+# StyleSwin-v2 (WC-Co fork)
+
+This fork (`StyleSwin-v2`) specialises StyleSwin for generating **WC-Co microstructure
+SEM images** (the `imagenet_9to4` dataset, three grain classes) and brings it to
+**parity with [`san-v2`](https://github.com/dkagramanyan/san-v2)** so the two generators
+can be compared under matching tooling. Relative to upstream StyleSwin it adds:
+
+- **Class-conditional generation** (see [Conditioning](#conditioning) below) — StyleSwin
+  is unconditional upstream; this fork makes it conditional on the 3 grain classes.
+- A **san-v2-style `click` CLI** (`train.py`) and **StyleGAN-style logging**
+  (`log.txt`, `stats.jsonl`, TensorBoard events, and the `tick … kimg … sec/tick …`
+  status line) driven by a **kimg/tick** loop.
+- **[combra](https://github.com/dkagramanyan/combra) generative-quality metrics** each
+  snapshot tick, **sharded across all GPU ranks** (FID / CMMD / FD-DINOv2 plus the
+  angle-distribution and bimodal-Gaussian metrics), exactly as in san-v2.
+- **ImageNet-style zip datasets** (`dataset_tool.py`, one zip per resolution) instead of
+  requiring LMDB, plus updated CUDA/Python module usage (latest PyTorch `torch.amp`
+  custom-op decorators, `torchvision` `value_range`).
+- A `gen_images.py` generate script and `sbatch/` scripts for **256 / 512 / 1024**.
+
+The generator/discriminator **update math is unchanged** from upstream StyleSwin
+(logistic + R1 losses, EMA); conditioning and the new tooling wrap around it. The
+combra integration is documented on the wc_cv docs site (the `styleswin` page).
+
+## Conditioning
+
+StyleSwin is unconditional upstream. This fork adds **class-conditional** generation for
+the 3 grain classes using two standard techniques (enable with `--cond True`;
+`n_classes` is read from the dataset's `dataset.json`, and `n_classes = 0` keeps the
+original unconditional path unchanged):
+
+- **Generator — san-v2 mapping conditioning.** The one-hot label is embedded by a linear
+  layer to `style_dim`, both `z` and the embedding are 2nd-moment-normalised (StyleSwin's
+  `PixelNorm`, identical to san-v2's `normalize_2nd_moment`), concatenated, and fed to the
+  mapping MLP — so the style `w` becomes class-dependent. Only the mapping-network input
+  changes (`models/generator.py`); the Swin blocks, ToRGB and attention are untouched.
+- **Discriminator — projection (Miyato & Koyama, 2018).** The label embedding is projected
+  onto the pre-logit feature `h` and `(embed(y)·h)/√dim` is added to the scalar logit
+  (`models/discriminator.py`), riding inside StyleSwin's existing **logistic** loss (no SAN
+  objective, so the update logic is unchanged). Fake labels are sampled from the empirical
+  class distribution by default (`--fake-label-sampling empirical`) so imbalanced classes
+  are not over-represented.
+
+## Installation
+
+Create a `python=3.12` conda env, install the latest PyTorch (CUDA 13.2 wheels), the CUDA
+compiler (`nvcc`) and ninja **from conda** (both needed to build the custom CUDA ops in
+`op/` — a pip ninja conflicts with conda's, and the torch wheel ships no `nvcc`), then the
+remaining deps. torch and ninja are intentionally kept out of `requirements.txt`:
+
+```bash
+conda create -n styleswin python=3.12 -y && conda activate styleswin
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu132
+conda install -c nvidia cuda-nvcc -y     # match torch's CUDA major (13.x)
+conda install anaconda::ninja -y
+pip install -r requirements.txt          # from the StyleSwin-v2 repo root
+```
+
+The `sbatch/` scripts load no system CUDA module — they set `CUDA_HOME=$CONDA_PREFIX`.
+
+## Data preparation
+
+Build one ImageNet-style zip per resolution with `dataset_tool.py` (same format and label
+convention as san-v2 — an uncompressed zip of PNGs plus a `dataset.json` of per-image
+labels):
+
+```bash
+python dataset_tool.py --source=/path/to/wc_co_source --dest=./datasets/imagenet_9to4_256x256.zip --resolution=256x256
+```
+
+## Training
+
+```bash
+# conditional, 2 GPUs, combra metrics on every snapshot tick
+python train.py --outdir=./runs/wc-cv_h200 \
+        --data=./datasets/imagenet_9to4_256x256.zip \
+        --gpus=2 --batch-gpu 16 --cond True \
+        --combra-metrics True --save-inference-only True \
+        --kimg 25000 --snap 50
+```
+
+On the cluster, submit the per-resolution scripts from the `sbatch/` folder (2× H200,
+`rocky` partition):
+
+```bash
+cd sbatch
+sbatch train_256x256.sbatch      # or train_512x512.sbatch / train_1024x1024.sbatch
+```
+
+Each run writes to `runs/.../NNNNN-<desc>/` with `log.txt`, `stats.jsonl`, TensorBoard
+events, `network-snapshot-<kimg>.pt` checkpoints, and `best_model.pt` (selected by
+`combra_fid10k`). `--save-inference-only True` also writes a small `G_ema`-only snapshot.
+
+## Metrics (combra)
+
+When `--combra-metrics` is enabled (default), every snapshot tick scores `G_ema` against
+the whole training set with `combra.metrics.compute_all_metrics` — **sharded across all
+ranks**: each rank generates its slice of a fixed 10 000-image sample and extracts the
+FID / CMMD / FD-DINOv2 features and pooled vertex angles, which are gathered to rank 0 for
+the final distances. Results are printed (`combra metrics: …`) and logged to TensorBoard
+under `Metrics/combra_*`. combra is optional; if it is not installed, training prints a
+warning at startup and continues. Install it with `pip install -e ../wc_cv/combra`.
+
+## Generation
+
+```bash
+python gen_images.py --network=./runs/.../best_model.pt --outdir=./generated \
+       --trunc=0.7 --classes 0,1,2 --samples-per-class 1000 --gpus 2 --batch-gpu 32
+```
+
+Conditional runs write per class into `class_<id>/class_<id>_<index>.png`; pass `--gpus`
+to shard generation. The `sbatch/generate_{256x256,512x512,1024x1024}.sbatch` scripts wrap
+this for the cluster.
+
+---
+
+The original StyleSwin documentation follows.
+
 ## Abstract
 
 > Despite the tantalizing success in a broad of vision tasks, transformers have not yet demonstrated on-par ability as ConvNets in high-resolution image generative modeling. In this paper, we seek to explore using pure transformers to build a generative adversarial network for high-resolution image synthesis. To this end, we believe that local attention is crucial to strike the balance between computational efficiency and modeling capacity. Hence, the proposed generator adopts Swin transformer in a style-based architecture. To achieve a larger receptive field, we propose double attention which simultaneously leverages the context of the local and the shifted windows, leading to improved generation quality. Moreover, we show that offering the knowledge of the absolute position that has been lost in window-based transformers greatly benefits the generation quality. The proposed StyleSwin is scalable to high resolutions, with both the coarse geometry and fine structures benefit from the strong expressivity of transformers. However, blocking artifacts occur during high-resolution synthesis because performing the local attention in a block-wise manner may break the spatial coherency. To solve this, we empirically investigate various solutions, among which we find that employing a wavelet discriminator to examine the spectral discrepancy effectively suppresses the artifacts. Extensive experiments show the superiority over prior transformer-based GANs, especially on high resolutions, e.g., 1024x1024. The StyleSwin, without complex training strategies, excels over StyleGAN on CelebA-HQ 1024x1024, and achieves on-par performance on FFHQ 1024x1024, proving the promise of using transformers for high-resolution image generation.

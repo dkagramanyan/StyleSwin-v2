@@ -516,17 +516,28 @@ class Generator(nn.Module):
         qk_scale=None,
         drop_rate=0,
         attn_drop_rate=0,
+        n_classes=0,
     ):
         super().__init__()
         self.style_dim = style_dim
         self.size = size
         self.mlp_ratio = mlp_ratio
-        
+
+        # Class conditioning (san-v2 mapping technique): embed the one-hot label and
+        # concatenate it with z at the mapping-network input, so w becomes class-dependent.
+        # n_classes == 0 keeps the original unconditional path unchanged.
+        self.n_classes = n_classes
+        mapping_in_dim = style_dim
+        if n_classes > 0:
+            self.class_embed = EqualLinear(n_classes, style_dim, lr_mul=lr_mlp)
+            mapping_in_dim = style_dim * 2
+
         layers = [PixelNorm()]
-        for _ in range(n_mlp):
+        for i in range(n_mlp):
             layers.append(
                 EqualLinear(
-                    style_dim, style_dim, lr_mul=lr_mlp, activation='fused_lrelu'
+                    mapping_in_dim if i == 0 else style_dim,
+                    style_dim, lr_mul=lr_mlp, activation='fused_lrelu'
                 )
             )
         self.style = nn.Sequential(*layers)
@@ -597,12 +608,21 @@ class Generator(nn.Module):
     def forward(
         self,
         noise,
+        labels=None,
         return_latents=False,
         inject_index=None,
         truncation=1,
         truncation_latent=None,
     ):
-        styles = self.style(noise)
+        if self.n_classes > 0:
+            assert labels is not None, "conditional generator requires labels"
+            # normalize z and the label embedding separately (self.style[0] is PixelNorm,
+            # equivalent to san-v2's normalize_2nd_moment), concat, then the FC mapping.
+            z = self.style[0](noise)
+            y = self.style[0](self.class_embed(labels))
+            styles = self.style[1:](torch.cat([z, y], dim=1))
+        else:
+            styles = self.style(noise)
         inject_index = self.n_latent
 
         if truncation < 1:

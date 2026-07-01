@@ -171,7 +171,7 @@ class FromRGB(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, size, channel_multiplier=2, blur_kernel=[1, 3, 3, 1], sn=False, ssd=False):
+    def __init__(self, size, channel_multiplier=2, blur_kernel=[1, 3, 3, 1], sn=False, ssd=False, n_classes=0):
         super().__init__()
 
         channels = {
@@ -221,7 +221,19 @@ class Discriminator(nn.Module):
                 EqualLinear(channels[4], 1),
             )
 
-    def forward(self, input):
+        # Class conditioning (Miyato & Koyama projection discriminator): project the label
+        # embedding onto the pre-logit feature h (dim channels[4]) and add it to the scalar
+        # logit. self.final_linear[-1] is the scalar Linear; everything before it produces h.
+        # n_classes == 0 keeps the original unconditional path unchanged.
+        self.n_classes = n_classes
+        self.final_feat_dim = channels[4]
+        if n_classes > 0:
+            if sn:
+                self.class_embed = spectral_norm(nn.Linear(n_classes, channels[4], bias=False))
+            else:
+                self.class_embed = EqualLinear(n_classes, channels[4])
+
+    def forward(self, input, labels=None):
         input = self.dwt(input)
         out = None
 
@@ -244,6 +256,12 @@ class Discriminator(nn.Module):
         out = self.final_conv(out)
 
         out = out.view(batch, -1)
-        out = self.final_linear(out)
+        h = self.final_linear[:-1](out)
+        out = self.final_linear[-1](h)
+
+        if self.n_classes > 0:
+            assert labels is not None, "conditional discriminator requires labels"
+            proj = (self.class_embed(labels) * h).sum(1, keepdim=True) / math.sqrt(self.final_feat_dim)
+            out = out + proj
 
         return out

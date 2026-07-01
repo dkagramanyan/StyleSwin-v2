@@ -1,0 +1,205 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+"""Train StyleSwin with a san-v2-style click CLI.
+
+This is the primary training entry point. It mirrors san-v2's API (``--outdir``,
+``--data``, ``--gpus``, ``--batch-gpu``, ``--kimg``, ``--tick``, ``--snap``,
+``--combra-metrics``, ``--save-inference-only`` ...) while keeping StyleSwin's own model
+flags. The heavy lifting -- the kimg/tick loop, san-v2-style logging and the sharded
+combra metrics -- lives in ``training/training_loop.py``. The generator/discriminator
+update math is unchanged from the original ``train_styleswin.py``.
+
+Class conditioning uses the san-v2 generator technique (embed the one-hot label into the
+mapping network) and a Miyato & Koyama projection discriminator. Pass ``--cond True`` to
+enable it; ``n_classes`` is read from the dataset's ``dataset.json``.
+
+Example (single stage, conditional, 2 GPUs):
+
+    python train.py --outdir=./runs --data=./datasets/imagenet_9to4_256x256.zip \\
+        --gpus=2 --batch-gpu=16 --cond True --combra-metrics True \\
+        --kimg 25000 --snap 50 --save-inference-only True
+"""
+
+import json
+import os
+import re
+import tempfile
+
+import click
+import torch
+
+import dnnlib
+from torch_utils import training_stats
+from training import training_loop
+
+#----------------------------------------------------------------------------
+
+def subprocess_fn(rank, c, temp_dir):
+    dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
+
+    if c.num_gpus > 1:
+        init_file = os.path.abspath(os.path.join(temp_dir, '.torch_distributed_init'))
+        init_method = f'file://{init_file}'
+        torch.cuda.set_device(rank)
+        torch.distributed.init_process_group(
+            backend='nccl', init_method=init_method, rank=rank, world_size=c.num_gpus)
+
+    sync_device = torch.device('cuda', rank) if c.num_gpus > 1 else None
+    training_stats.init_multiprocessing(rank=rank, sync_device=sync_device)
+
+    training_loop.training_loop(rank=rank, num_gpus=c.num_gpus, run_dir=c.run_dir, **c.loop)
+
+#----------------------------------------------------------------------------
+
+def launch_training(c, desc, outdir, dry_run):
+    dnnlib.util.Logger(should_flush=True)
+
+    prev_run_dirs = []
+    if os.path.isdir(outdir):
+        prev_run_dirs = [x for x in os.listdir(outdir) if os.path.isdir(os.path.join(outdir, x))]
+    prev_run_ids = [re.match(r'^\d+', x) for x in prev_run_dirs]
+    prev_run_ids = [int(x.group()) for x in prev_run_ids if x is not None]
+    cur_run_id = max(prev_run_ids, default=-1) + 1
+    c.run_dir = os.path.join(outdir, f'{cur_run_id:05d}-{desc}')
+    assert not os.path.exists(c.run_dir)
+
+    print()
+    print('Training options:')
+    print(json.dumps(c, indent=2))
+    print()
+    print(f'Output directory:    {c.run_dir}')
+    print(f'Number of GPUs:      {c.num_gpus}')
+    print(f'Batch size:          {c.loop.batch_gpu * c.num_gpus} images')
+    print(f'Training duration:   {c.loop.total_kimg} kimg')
+    print(f'Dataset path:        {c.loop.data_path}')
+    print(f'Dataset resolution:  {c.loop.resolution}')
+    print(f'Num classes:         {c.loop.n_classes}')
+    print()
+
+    if dry_run:
+        print('Dry run; exiting.')
+        return
+
+    print('Creating output directory...')
+    os.makedirs(c.run_dir)
+    with open(os.path.join(c.run_dir, 'training_options.json'), 'wt') as f:
+        json.dump(c, f, indent=2)
+
+    print('Launching processes...')
+    torch.multiprocessing.set_start_method('spawn')
+    with tempfile.TemporaryDirectory() as temp_dir:
+        if c.num_gpus == 1:
+            subprocess_fn(rank=0, c=c, temp_dir=temp_dir)
+        else:
+            torch.multiprocessing.spawn(fn=subprocess_fn, args=(c, temp_dir), nprocs=c.num_gpus)
+
+#----------------------------------------------------------------------------
+
+def _dataset_info(data_path, lmdb, size, cond):
+    """Return (resolution, n_classes, name) for the dataset."""
+    if lmdb:
+        return size, 0, os.path.splitext(os.path.basename(data_path.rstrip('/')))[0]
+    from dataset.imagenet_dataset import ImageFolderDataset
+    try:
+        ds = ImageFolderDataset(path=data_path, use_labels=cond)
+    except IOError as err:
+        raise click.ClickException(f'--data: {err}')
+    n_classes = ds.label_dim if (cond and ds.has_labels) else 0
+    return ds.resolution, n_classes, ds.name
+
+#----------------------------------------------------------------------------
+
+@click.command()
+# Required.
+@click.option('--outdir',      help='Where to save the results', metavar='DIR',       required=True)
+@click.option('--data',        help='Training data', metavar='[ZIP|DIR]',             type=str, required=True)
+@click.option('--gpus',        help='Number of GPUs to use', metavar='INT',           type=click.IntRange(min=1), required=True)
+@click.option('--batch-gpu',   help='Batch size per GPU (total = batch-gpu * gpus)', metavar='INT', type=click.IntRange(min=1), required=True)
+# Conditioning / dataset.
+@click.option('--cond',        help='Train class-conditional model', metavar='BOOL',  type=bool, default=False, show_default=True)
+@click.option('--mirror',      help='Enable dataset x-flips', metavar='BOOL',         type=bool, default=False, show_default=True)
+@click.option('--lmdb',        help='Use a legacy LMDB dataset (unconditional)', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--size',        help='Image resolution (lmdb only; else read from data)', metavar='INT', type=click.IntRange(min=4), default=256, show_default=True)
+@click.option('--fake-label-sampling', help='Fake-label distribution', type=click.Choice(['empirical', 'uniform']), default='empirical', show_default=True)
+# Duration / logging.
+@click.option('--kimg',        help='Total training duration', metavar='KIMG',        type=click.IntRange(min=1), default=25000, show_default=True)
+@click.option('--tick',        help='How often to print progress', metavar='KIMG',    type=click.IntRange(min=1), default=4, show_default=True)
+@click.option('--snap',        help='How often to snapshot/eval', metavar='TICKS',    type=click.IntRange(min=1), default=50, show_default=True)
+@click.option('--metrics',     help='(reserved for parity; combra is the metric)', metavar='STR', type=str, default='none', show_default=True)
+@click.option('--combra-metrics', help='Compute combra metrics each snapshot tick', metavar='BOOL', type=bool, default=True, show_default=True)
+@click.option('--save-inference-only', help='Also save a small G_ema-only snapshot each tick', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--seed',        help='Random seed', metavar='INT',                     type=click.IntRange(min=0), default=0, show_default=True)
+@click.option('--workers',     help='DataLoader worker processes', metavar='INT',     type=click.IntRange(min=1), default=3, show_default=True)
+@click.option('--resume',      help='Resume from a network .pt checkpoint', metavar='PATH', type=str)
+@click.option('--desc',        help='String to include in the run dir name', metavar='STR', type=str)
+@click.option('-n', '--dry-run', help='Print training options and exit', is_flag=True)
+# StyleSwin model / optimizer hyperparameters.
+@click.option('--style-dim',   help='Style (latent) dimension', metavar='INT',        type=click.IntRange(min=1), default=512, show_default=True)
+@click.option('--lr-mlp',      help='LR multiplier for the mapping MLP', metavar='FLOAT', type=float, default=0.01, show_default=True)
+@click.option('--enable-full-resolution', help='Full-attention resolution index', metavar='INT', type=click.IntRange(min=1), default=8, show_default=True)
+@click.option('--g-channel-multiplier', help='Generator channel multiplier', metavar='INT', type=click.IntRange(min=1), default=1, show_default=True)
+@click.option('--d-channel-multiplier', help='Discriminator channel multiplier', metavar='INT', type=click.IntRange(min=1), default=2, show_default=True)
+@click.option('--glr',         help='G learning rate', metavar='FLOAT',               type=click.FloatRange(min=0), default=0.0002, show_default=True)
+@click.option('--dlr',         help='D learning rate', metavar='FLOAT',               type=click.FloatRange(min=0), default=0.0002, show_default=True)
+@click.option('--r1',          help='R1 regularization weight', metavar='FLOAT',      type=float, default=10.0, show_default=True)
+@click.option('--d-reg-every', help='Apply R1 every N steps', metavar='INT',          type=click.IntRange(min=1), default=16, show_default=True)
+@click.option('--gan-weight',  help='GAN loss weight', metavar='FLOAT',               type=float, default=1.0, show_default=True)
+@click.option('--ttur',        help='Use TTUR (G_lr = D_lr / 4)', metavar='BOOL',     type=bool, default=False, show_default=True)
+@click.option('--bcr',         help='Enable bCR consistency regularization', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--d-sn',        help='Spectral norm in D', metavar='BOOL',             type=bool, default=False, show_default=True)
+@click.option('--use-checkpoint', help='Gradient checkpointing in G', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--use-flip',    help='Random horizontal flip augmentation', metavar='BOOL', type=bool, default=False, show_default=True)
+def main(**kwargs):
+    opts = dnnlib.EasyDict(kwargs)
+    resolution, n_classes, name = _dataset_info(opts.data, opts.lmdb, opts.size, opts.cond)
+
+    c = dnnlib.EasyDict()
+    c.num_gpus = opts.gpus
+    c.restart_every = 0
+    c.loop = dnnlib.EasyDict(
+        data_path=opts.data,
+        resolution=resolution,
+        lmdb=opts.lmdb,
+        n_classes=n_classes,
+        batch_gpu=opts.batch_gpu,
+        total_kimg=opts.kimg,
+        kimg_per_tick=opts.tick,
+        snap_ticks=opts.snap,
+        random_seed=opts.seed,
+        workers=opts.workers,
+        combra_metrics=opts.combra_metrics,
+        save_inference_only=opts.save_inference_only,
+        fake_label_sampling=opts.fake_label_sampling,
+        resume=opts.resume,
+        style_dim=opts.style_dim,
+        lr_mlp=opts.lr_mlp,
+        enable_full_resolution=opts.enable_full_resolution,
+        g_channel_multiplier=opts.g_channel_multiplier,
+        d_channel_multiplier=opts.d_channel_multiplier,
+        g_lr=opts.glr,
+        d_lr=opts.dlr,
+        r1=opts.r1,
+        d_reg_every=opts.d_reg_every,
+        gan_weight=opts.gan_weight,
+        ttur=opts.ttur,
+        bcr=opts.bcr,
+        use_checkpoint=opts.use_checkpoint,
+        use_flip=(opts.use_flip or opts.mirror),
+        D_sn=opts.d_sn,
+    )
+
+    desc = f'styleswin-{name}-gpus{opts.gpus:d}-batch{opts.batch_gpu * opts.gpus:d}'
+    if opts.cond:
+        desc += '-cond'
+    if opts.desc is not None:
+        desc += f'-{opts.desc}'
+
+    launch_training(c=c, desc=desc, outdir=opts.outdir, dry_run=opts.dry_run)
+
+#----------------------------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+
+#----------------------------------------------------------------------------

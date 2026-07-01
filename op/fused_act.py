@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from torch.autograd import Function
 from torch.utils.cpp_extension import load
 
-from torch.cuda.amp import custom_fwd, custom_bwd
+from torch.amp import custom_fwd, custom_bwd
 
 module_path = os.path.dirname(__file__)
 fused = load(
@@ -55,7 +55,7 @@ class FusedLeakyReLUFunctionBackward(Function):
 
 class FusedLeakyReLUFunction(Function):
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32)
+    @custom_fwd(device_type='cuda', cast_inputs=torch.float32)
     def forward(ctx, input, bias, negative_slope, scale):
         empty = input.new_empty(0)
         out = fused.fused_bias_act(input, bias, empty, 3, 0, negative_slope, scale)
@@ -66,7 +66,7 @@ class FusedLeakyReLUFunction(Function):
         return out
 
     @staticmethod
-    @custom_bwd
+    @custom_bwd(device_type='cuda')
     def backward(ctx, grad_output):
         out, = ctx.saved_tensors
 

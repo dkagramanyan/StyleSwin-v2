@@ -290,7 +290,7 @@ def evaluation(generator, args, steps):
                     nrow=1,
                     padding=0,
                     normalize=True,
-                    range=(0, 1),
+                    value_range=(0, 1),
                 )
                 cnt += 1
     

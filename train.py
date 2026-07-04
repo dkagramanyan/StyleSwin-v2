@@ -34,6 +34,26 @@ from torch_utils import training_stats
 from training import training_loop
 
 #----------------------------------------------------------------------------
+# Per-resolution training presets, selected with --cfg (mirrors san-v2's / DiffiT's
+# --cfg convention). The StyleSwin generator and discriminator are resolution-parametric
+# -- they are built from the dataset resolution -- so today these presets differ only in the
+# memory-bound batch size; the remaining model/optimizer knobs are bundled here so each
+# resolution has a single place to tune. Any explicit CLI flag overrides the preset value.
+# Keys are the click parameter names.
+
+RESOLUTION_CONFIGS = {
+    'styleswin-256':  dict(size=256,  batch_gpu=16, enable_full_resolution=8,
+                           g_channel_multiplier=1, d_channel_multiplier=2,
+                           glr=0.0002, dlr=0.0002, r1=10.0, d_reg_every=16, style_dim=512),
+    'styleswin-512':  dict(size=512,  batch_gpu=8,  enable_full_resolution=8,
+                           g_channel_multiplier=1, d_channel_multiplier=2,
+                           glr=0.0002, dlr=0.0002, r1=10.0, d_reg_every=16, style_dim=512),
+    'styleswin-1024': dict(size=1024, batch_gpu=4,  enable_full_resolution=8,
+                           g_channel_multiplier=1, d_channel_multiplier=2,
+                           glr=0.0002, dlr=0.0002, r1=10.0, d_reg_every=16, style_dim=512),
+}
+
+#----------------------------------------------------------------------------
 
 def subprocess_fn(rank, c, temp_dir):
     dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
@@ -115,7 +135,8 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--outdir',      help='Where to save the results', metavar='DIR',       required=True)
 @click.option('--data',        help='Training data', metavar='[ZIP|DIR]',             type=str, required=True)
 @click.option('--gpus',        help='Number of GPUs to use', metavar='INT',           type=click.IntRange(min=1), required=True)
-@click.option('--batch-gpu',   help='Batch size per GPU (total = batch-gpu * gpus)', metavar='INT', type=click.IntRange(min=1), required=True)
+@click.option('--batch-gpu',   help='Batch size per GPU (total = batch-gpu * gpus); from --cfg if omitted', metavar='INT', type=click.IntRange(min=1), default=None)
+@click.option('--cfg',         help='Per-resolution preset', type=click.Choice(list(RESOLUTION_CONFIGS)), default=None, show_default=True)
 # Conditioning / dataset.
 @click.option('--cond',        help='Train class-conditional model', metavar='BOOL',  type=bool, default=False, show_default=True)
 @click.option('--mirror',      help='Enable dataset x-flips', metavar='BOOL',         type=bool, default=False, show_default=True)
@@ -152,7 +173,23 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--use-flip',    help='Random horizontal flip augmentation', metavar='BOOL', type=bool, default=False, show_default=True)
 def main(**kwargs):
     opts = dnnlib.EasyDict(kwargs)
+
+    # Apply a per-resolution preset (--cfg). Explicit CLI flags take precedence over it.
+    if opts.cfg is not None:
+        ctx = click.get_current_context()
+        for key, val in RESOLUTION_CONFIGS[opts.cfg].items():
+            if ctx.get_parameter_source(key) != click.core.ParameterSource.COMMANDLINE:
+                opts[key] = val
+
+    if opts.batch_gpu is None:
+        raise click.ClickException('Provide --batch-gpu, or a --cfg preset that sets it.')
+
     resolution, n_classes, name = _dataset_info(opts.data, opts.lmdb, opts.size, opts.cond)
+
+    if opts.cfg is not None and not opts.lmdb and resolution != RESOLUTION_CONFIGS[opts.cfg]['size']:
+        raise click.ClickException(
+            f'--cfg {opts.cfg} expects {RESOLUTION_CONFIGS[opts.cfg]["size"]}px data, '
+            f'but --data is {resolution}px ({name}).')
 
     c = dnnlib.EasyDict()
     c.num_gpus = opts.gpus

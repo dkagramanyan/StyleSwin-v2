@@ -34,9 +34,9 @@ nvcc --version
 conda list | grep -E "torch|cuda|cudnn|ninja"
 
 python train.py --outdir=./runs/wc-cv_h200 \
-        --data=./datasets/imagenet_9to4_512x512.zip \
+        --cfg styleswin-512 \
+        --data=./datasets/imagenet_9to4_1024x1024_512x512.zip \
         --gpus=2 \
-        --batch-gpu 8 \
         --cond True \
         --combra-metrics True \
         --save-inference-only True \

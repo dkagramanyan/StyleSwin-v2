@@ -32,8 +32,32 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
   label convention as san-v2.
 - `gen_images.py` generate script (per-class output, multi-GPU sharding, truncation) and
   `sbatch/` train + generate scripts for **256 / 512 / 1024**.
+- **Full metric/loss coverage in TensorBoard.** Beyond the losses/timing/resources and the combra
+  suite, the loop now also logs the effective learning rates (`LearningRate/G`, `LearningRate/D`),
+  the running best FID (`Metrics/combra_fid10k_best`), and the `G_ema` sample grid each snapshot
+  (image tag `Fakes`, alongside the on-disk `fakes<kimg>.png`).
+- **Per-resolution `--cfg` presets** (`styleswin-256/512/1024`) — a `RESOLUTION_CONFIGS` dict in
+  `train.py` bundling the per-resolution knobs (batch size, `enable_full_resolution`, channel
+  multipliers, lr, R1). `--batch-gpu` is now optional when a preset supplies it; explicit CLI
+  flags still override the preset, and `--cfg` cross-checks its resolution against the `--data`
+  zip.
+
+### Fixed
+- **`g_ema` is now synchronised across ranks.** It was initialised from each rank's own random
+  weights *before* the DDP broadcast; because combra generation is sharded per rank over each
+  rank's `g_ema`, the metric image set mixed divergent EMAs early in training. It is now copied
+  from the post-broadcast weights (`training/training_loop.py`).
+- **`DistributedSampler.set_epoch()` is now called each epoch** (`sample_data`), so the shard
+  ordering varies epoch-to-epoch instead of repeating epoch 0's order forever.
+- **EMA decay now scales with the real batch size** (`0.5 ** (batch_size / 10000)`); it was
+  hardcoded to batch 32, mis-calibrating the EMA whenever total batch ≠ 32 (e.g. 512/1024).
+- **The combra gate stays rank-uniform on reference-precompute failure** — a success flag is
+  all-reduced so combra is disabled on all ranks together (avoids a divergent-gate deadlock and
+  repeated per-tick failures).
 
 ### Changed
+- `sbatch/train_*.sbatch` select the resolution via `--cfg styleswin-<res>` and reference the
+  dataset by its real name `./datasets/imagenet_9to4_1024x1024_<res>.zip`.
 - PyTorch install target is the CUDA 13.2 wheel index; `requirements.txt` drops the pinned
   `tensorflow==1.15.0` and `torch>=1.6.0`, replaces `sklearn` with the maintained deps, and
   adds `click`, `tensorboard`, `psutil`, `pillow`, `requests`, `pyspng`.

@@ -68,10 +68,16 @@ def accumulate(model1, model2, decay=0.999):
         par1[k].data.mul_(decay).add_(par2[k].data, alpha=1 - decay)
 
 
-def sample_data(loader):
+def sample_data(loader, sampler=None):
+    # Re-seed the DistributedSampler each epoch so the shard ordering varies epoch-to-epoch
+    # (without set_epoch it stays at epoch 0 forever and repeats the same order every pass).
+    epoch = 0
     while True:
+        if sampler is not None and hasattr(sampler, 'set_epoch'):
+            sampler.set_epoch(epoch)
         for batch in loader:
             yield batch
+        epoch += 1
 
 
 def data_sampler(dataset, shuffle, distributed):
@@ -313,7 +319,7 @@ def training_loop(
 
     sampler = data_sampler(training_set, shuffle=True, distributed=(num_gpus > 1))
     loader = sample_data(data.DataLoader(training_set, batch_size=batch_gpu, sampler=sampler,
-                                         num_workers=workers, drop_last=True, pin_memory=True))
+                                         num_workers=workers, drop_last=True, pin_memory=True), sampler)
 
     # Empirical class distribution for fake-label sampling.
     class_probs = None
@@ -339,7 +345,6 @@ def training_loop(
                                   sn=D_sn, n_classes=n_classes).to(device)
     g_ema = make_G()
     g_ema.eval()
-    accumulate(g_ema, generator, 0)
 
     g_reg_ratio = 1.0                       # StyleSwin: no G regularization
     d_reg_ratio = d_reg_every / (d_reg_every + 1)
@@ -365,6 +370,15 @@ def training_loop(
         discriminator = nn.parallel.DistributedDataParallel(
             discriminator, device_ids=[rank], output_device=rank, broadcast_buffers=False)
 
+    # Initialise G_ema from the post-broadcast weights so it is identical on every rank
+    # (DDP broadcasts rank 0's parameters at construction). This must happen *after* the DDP
+    # wrap: doing it before -- as the code used to -- seeds g_ema from each rank's own random
+    # init, and since combra generation is sharded per rank over each rank's g_ema, the metric
+    # image set would be a mix of divergent EMAs early in training. On resume, g_ema is loaded
+    # from the checkpoint and already rank-consistent, so leave it untouched.
+    if resume is None:
+        accumulate(g_ema, g_module, 0)
+
     g_lr_eff = (d_lr / 4 if ttur else g_lr) * g_reg_ratio
     g_optim = optim.Adam(generator.parameters(), lr=g_lr_eff,
                          betas=(beta1 ** g_reg_ratio, beta2 ** g_reg_ratio))
@@ -380,14 +394,23 @@ def training_loop(
 
     # ------------------------------------------------------------------ combra reference.
     combra_ref = None
+    combra_ref_ok = True
     if combra_metrics and (importlib.util.find_spec('combra') is not None) and (reference_u8_set is not None):
         stage('Precomputing combra reference (sharded over ranks)')
         try:
             combra_ref = _combra_precompute_reference(reference_u8_set, device, rank, num_gpus)
         except Exception as e:
             combra_ref = None
+            combra_ref_ok = False
             if rank == 0:
                 print(f'[combra] reference precompute failed, disabling combra metrics: {e}', flush=True)
+        if num_gpus > 1:
+            # Keep the combra gate rank-uniform: if precompute failed on ANY rank, disable it on
+            # ALL ranks (a divergent gate would deadlock the per-tick collectives). This also
+            # avoids re-running the sharded eval every tick only to fail on a None reference.
+            flag = torch.tensor([1.0 if combra_ref_ok else 0.0], device=device)
+            torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MIN)
+            combra_ref_ok = bool(flag.item() > 0.5)
     if combra_metrics and (rank == 0) and (importlib.util.find_spec('combra') is None):
         print("Warning: combra_metrics=True but the `combra` package is not installed -- "
               "combra metrics will be skipped. Install it (e.g. `pip install -e ../combra`) "
@@ -397,7 +420,7 @@ def training_loop(
               'skipping combra metrics on the --lmdb path.', flush=True)
 
     # Fixed combra generation set (latents + labels), seeded identically on every rank.
-    combra_active = combra_metrics and (importlib.util.find_spec('combra') is not None) and (reference_u8_set is not None)
+    combra_active = combra_metrics and (importlib.util.find_spec('combra') is not None) and (reference_u8_set is not None) and combra_ref_ok
     combra_z = combra_c = None
     if combra_active:
         combra_z = torch.randn([COMBRA_NUM_GEN, style_dim], device=device,
@@ -426,7 +449,7 @@ def training_loop(
         print()
     cur_nimg = start_nimg
     batch_size = batch_gpu * num_gpus
-    accum = 0.5 ** (32 / (10 * 1000))
+    accum = 0.5 ** (batch_size / (10 * 1000))   # EMA half-life ~10 kimg; scales with total batch
     best_fid = float('inf')
     cur_tick = 0
     tick_start_nimg = cur_nimg
@@ -520,6 +543,9 @@ def training_loop(
         fields += [f"gpumem {training_stats.report0('Resources/peak_gpu_mem_gb', torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}"]
         fields += [f"reserved {training_stats.report0('Resources/peak_gpu_mem_reserved_gb', torch.cuda.max_memory_reserved(device) / 2**30):<6.2f}"]
         torch.cuda.reset_peak_memory_stats()
+        # Effective learning rates (read from the optimizers so a future scheduler is reflected).
+        training_stats.report0('LearningRate/G', g_optim.param_groups[0]['lr'])
+        training_stats.report0('LearningRate/D', d_optim.param_groups[0]['lr'])
         if rank == 0:
             print(' '.join(fields))
 
@@ -546,8 +572,10 @@ def training_loop(
                         f'{k}={v:.4f}' for k, v in combra_results.items()), flush=True)
 
             if rank == 0:
-                # Save an image snapshot grid and the checkpoints.
-                _save_image_snapshot(g_ema, combra_z, combra_c, batch_gpu, n_classes, run_dir, cur_nimg, device)
+                # Save an image snapshot grid (to disk and TensorBoard) and the checkpoints.
+                grid = _save_image_snapshot(g_ema, combra_z, combra_c, batch_gpu, n_classes, run_dir, cur_nimg, device)
+                if stats_tfevents is not None:
+                    stats_tfevents.add_image('Fakes', grid, global_step=cur_nimg // 1000)
                 ckpt = {
                     'g': g_module.state_dict(), 'd': d_module.state_dict(),
                     'g_ema': g_ema.state_dict(), 'g_optim': g_optim.state_dict(),
@@ -565,6 +593,8 @@ def training_loop(
                     torch.save(ckpt, os.path.join(run_dir, 'best_model.pt'))
                     with open(os.path.join(run_dir, 'best_nimg.txt'), 'w') as f:
                         f.write(str(cur_nimg))
+                if fid_key is not None:
+                    stats_metrics['combra_fid10k_best'] = best_fid
 
         # Update logs.
         timestamp = time.time()
@@ -606,14 +636,16 @@ def _cpu_mem_gb():
 
 @torch.no_grad()
 def _save_image_snapshot(g_ema, combra_z, combra_c, batch_gpu, n_classes, run_dir, cur_nimg, device):
-    # A small grid of G_ema samples, denormalized to [0,1] for viewing.
+    # A small grid of G_ema samples, denormalized to [0,1] for viewing. Returns the grid
+    # (CHW float in [0,1]) so the caller can also log it to TensorBoard.
     n = min(16, batch_gpu if combra_z is None else combra_z.shape[0])
     z = torch.randn(n, g_ema.style_dim, device=device) if combra_z is None else combra_z[:n]
     c = combra_c[:n] if (combra_c is not None) else None
     img = g_ema(z, c)[0] if n_classes > 0 else g_ema(z)[0]
     mean, std = _norm_stats(device)
     img = (img * std + mean).clamp(0, 1)
-    torchvision.utils.save_image(img, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'),
-                                 nrow=int(math.sqrt(n)), padding=0)
+    grid = torchvision.utils.make_grid(img, nrow=int(math.sqrt(n)), padding=0)
+    torchvision.utils.save_image(grid, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'))
+    return grid
 
 #----------------------------------------------------------------------------

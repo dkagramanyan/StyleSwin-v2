@@ -42,7 +42,7 @@ from training import training_loop
 # Keys are the click parameter names.
 
 RESOLUTION_CONFIGS = {
-    'styleswin-256':  dict(size=256,  batch_gpu=16, enable_full_resolution=8,
+    'styleswin-256':  dict(size=256,  batch_gpu=64, enable_full_resolution=8,
                            g_channel_multiplier=1, d_channel_multiplier=2,
                            glr=0.0002, dlr=0.0002, r1=10.0, d_reg_every=16, style_dim=512),
     'styleswin-512':  dict(size=512,  batch_gpu=8,  enable_full_resolution=8,

@@ -31,6 +31,13 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_DEBUG=INFO
 export CUDA_VISIBLE_DEVICES=0,1
 
+# This compute node has no internet. combra's metric backbones (CLIP via the HF
+# Hub, InceptionV3, DINOv2) are pre-cached on shared storage by
+# `styleswin-download-models`; force HF offline so the CMMD CLIP load reads the
+# cache instead of hanging on a network request during combra precompute.
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
 nvidia-smi
 nvcc --version
 conda list | grep -E "torch|cuda|cudnn|ninja"

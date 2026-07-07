@@ -189,19 +189,45 @@ def _combra_precompute_reference(reference_u8_set, device, rank, num_gpus):
     # All ranks extract pooled angles + the three feature sets from this rank's
     # deterministic slice of the reference (the whole training set, as uint8) and gather
     # them to rank 0. Called once before the loop so no reference work recurs per tick.
-    from combra.metrics import cmmd_features, fd_dinov2_features, fid_features
-    n = len(reference_u8_set)
-    idx = range(rank, n, num_gpus)
-    local_u8 = np.stack([reference_u8_set[i][0] for i in idx])  # NCHW uint8
-    angles = _combra_gather_pooled_angles(local_u8, device, rank, num_gpus)
-    extractors = (('fid', fid_features), ('cmmd', cmmd_features), ('fd_dinov2', fd_dinov2_features))
-    feat = {}
-    for name, fn in extractors:
-        feats = fn(local_u8, device=device).astype(np.float32)
-        feat[name] = _combra_gather_to_rank0(feats, device, rank, num_gpus)
+    #
+    # The purely-local extraction (which may raise: OOM, a model load, a bad shard) is
+    # separated from the collective gathers by a rank-uniform success handshake. The
+    # gathers run ONLY when every rank extracted successfully, so a single-rank failure
+    # can never leave the surviving ranks blocked in all_gather while the failed rank
+    # moved on -- that mismatch (all_gather vs all_reduce) is a deadlock that hangs the
+    # whole job with no error printed on rank>0. Returns (combra_ref_or_None, ok) with
+    # `ok` identical on every rank.
+    from combra.metrics import (cmmd_features, fd_dinov2_features, fid_features,
+                                images_to_pooled_angles)
+    ok = True
+    local = None
+    try:
+        n = len(reference_u8_set)
+        idx = range(rank, n, num_gpus)
+        local_u8 = np.stack([reference_u8_set[i][0] for i in idx])  # NCHW uint8
+        pooled = np.asarray(
+            images_to_pooled_angles(local_u8, workers=min(32, os.cpu_count() or 1)),
+            np.float32).reshape(-1, 1)
+        feats = {name: fn(local_u8, device=device).astype(np.float32)
+                 for name, fn in (('fid', fid_features), ('cmmd', cmmd_features),
+                                  ('fd_dinov2', fd_dinov2_features))}
+        local = {'angles': pooled, 'feat': feats}
+    except Exception as e:
+        ok = False
+        print(f'[combra][rank {rank}] reference precompute failed: {e}', flush=True)
+    if num_gpus > 1:
+        flag = torch.tensor([1.0 if ok else 0.0], device=device)
+        torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MIN)
+        ok = bool(flag.item() > 0.5)
+    if not ok:
+        return None, False
+    # Every rank succeeded locally -> the collectives below are guaranteed uniform.
+    angles = _combra_gather_to_rank0(local['angles'], device, rank, num_gpus)
+    feat = {name: _combra_gather_to_rank0(local['feat'][name], device, rank, num_gpus)
+            for name in local['feat']}
     if rank != 0:
-        return None
-    return {'angles': angles, 'feat': feat}
+        return None, True
+    return {'angles': angles.reshape(-1), 'feat': feat}, True
 
 
 def _combra_eval_distributed(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank, device, combra_ref):
@@ -397,20 +423,10 @@ def training_loop(
     combra_ref_ok = True
     if combra_metrics and (importlib.util.find_spec('combra') is not None) and (reference_u8_set is not None):
         stage('Precomputing combra reference (sharded over ranks)')
-        try:
-            combra_ref = _combra_precompute_reference(reference_u8_set, device, rank, num_gpus)
-        except Exception as e:
-            combra_ref = None
-            combra_ref_ok = False
-            if rank == 0:
-                print(f'[combra] reference precompute failed, disabling combra metrics: {e}', flush=True)
-        if num_gpus > 1:
-            # Keep the combra gate rank-uniform: if precompute failed on ANY rank, disable it on
-            # ALL ranks (a divergent gate would deadlock the per-tick collectives). This also
-            # avoids re-running the sharded eval every tick only to fail on a None reference.
-            flag = torch.tensor([1.0 if combra_ref_ok else 0.0], device=device)
-            torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MIN)
-            combra_ref_ok = bool(flag.item() > 0.5)
+        # Returns a rank-uniform `combra_ref_ok`; failures are reported and disable combra on
+        # ALL ranks (never just one) so the per-tick collectives stay balanced. See the
+        # function for why the local/gather split matters for deadlock safety.
+        combra_ref, combra_ref_ok = _combra_precompute_reference(reference_u8_set, device, rank, num_gpus)
     if combra_metrics and (rank == 0) and (importlib.util.find_spec('combra') is None):
         print("Warning: combra_metrics=True but the `combra` package is not installed -- "
               "combra metrics will be skipped. Install it (e.g. `pip install -e ../combra`) "

@@ -533,6 +533,7 @@ def training_loop(
 
         tick_end_time = time.time()
         fields = []
+        fields += [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]"]
         fields += [f"tick {training_stats.report0('Progress/tick', cur_tick):<5d}"]
         fields += [f"kimg {training_stats.report0('Progress/kimg', cur_nimg / 1e3):<8.1f}"]
         fields += [f"time {dnnlib.util.format_time(training_stats.report0('Timing/total_sec', tick_end_time - start_time)):<12s}"]

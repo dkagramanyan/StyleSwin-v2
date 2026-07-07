@@ -30,13 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# combra: local optional package (in-training generative-quality metrics).
+# combra: optional package (in-training generative-quality metrics).
 # Private repo — cloning requires GitHub auth. If you are logged in via the
 # GitHub CLI (`gh auth login`, HTTPS protocol), git inherits gh's credential
 # helper and the clone works automatically:
-#     pip install -e .[combra]
-# On hosts with the nexus PyPI proxy configured, `pip install combra` also
-# resolves it directly without GitHub.
+#     pip install -e '.[combra]'
 combra = ["combra @ git+https://github.com/dkagramanyan/combra.git"]
 
 [project.urls]

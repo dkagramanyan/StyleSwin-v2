@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "styleswin"
+version = "0.1.0"
+description = "StyleSwin: Transformer-based GAN for high-resolution image generation (WC-Co microstructure fork)"
+readme = "README.md"
+authors = [{ name = "D.G.Kagramanyan" }]
+requires-python = ">=3.9,<3.14"
+
+# NOTE: torch / torchvision are installed separately from the CUDA wheel index
+# (see README). ninja is installed from conda (anaconda::ninja); a pip ninja
+# conflicts with it. Neither is listed here on purpose.
+dependencies = [
+  "numpy>=1.20",
+  "click>=8.0",
+  "pillow>=8.3.1",
+  "scipy>=1.7.1",
+  "requests>=2.26.0",
+  "tqdm>=4.62.2",
+  "psutil>=5.8.0",
+  "lmdb",
+  "timm",
+  "einops",
+  "wandb",
+  "tensorboard>=2.10",
+  "pyspng",
+]
+
+[project.optional-dependencies]
+# combra: local optional package (in-training generative-quality metrics).
+# Private repo — cloning requires GitHub auth. If you are logged in via the
+# GitHub CLI (`gh auth login`, HTTPS protocol), git inherits gh's credential
+# helper and the clone works automatically:
+#     pip install -e .[combra]
+# On hosts with the nexus PyPI proxy configured, `pip install combra` also
+# resolves it directly without GitHub.
+combra = ["combra @ git+https://github.com/dkagramanyan/combra.git"]
+
+[project.urls]
+Repository = "https://github.com/dkagramanyan/StyleSwin-v2"
+
+# This is a flat script repo (train.py, gen_images.py, loose module dirs), not
+# an importable package. Declaring no modules makes `pip install -e .` a pure
+# dependency/editable shell and stops setuptools auto-discovery from failing on
+# the mixed top-level layout. It also avoids trying to build the `op` CUDA
+# extensions at install time.
+[tool.setuptools]
+py-modules = []

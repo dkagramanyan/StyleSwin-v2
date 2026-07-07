@@ -63,15 +63,29 @@ original unconditional path unchanged):
 Create a `python=3.12` conda env, install the latest PyTorch (CUDA 13.2 wheels), the CUDA
 compiler (`nvcc`) and ninja **from conda** (both needed to build the custom CUDA ops in
 `op/` — a pip ninja conflicts with conda's, and the torch wheel ships no `nvcc`), then the
-remaining deps. torch and ninja are intentionally kept out of `requirements.txt`:
+remaining deps. torch and ninja are intentionally kept out of the project dependencies:
 
 ```bash
 conda create -n styleswin python=3.12 -y && conda activate styleswin
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu132
 conda install -c nvidia cuda-nvcc -y     # match torch's CUDA major (13.x)
 conda install anaconda::ninja -y
-pip install -r requirements.txt          # from the StyleSwin-v2 repo root
+pip install -e .                         # from the StyleSwin-v2 repo root (reads pyproject.toml)
+pip install -e '.[combra]'               # optional: adds the combra metrics package (see below)
 ```
+
+`pip install -e .` reads all runtime deps from `pyproject.toml`.
+
+**combra is a private repo.** The `.[combra]` extra clones it over `git+https`, which only
+works when you are authenticated to GitHub — the simplest way is the GitHub CLI:
+
+```bash
+gh auth login        # choose github.com → HTTPS; git then inherits gh's credential helper
+pip install -e '.[combra]'
+```
+
+On hosts with the nexus PyPI proxy configured, `pip install combra` also resolves it
+directly without touching GitHub.
 
 The `sbatch/` scripts load no system CUDA module — they set `CUDA_HOME=$CONDA_PREFIX`.
 
@@ -116,7 +130,8 @@ ranks**: each rank generates its slice of a fixed 10 000-image sample and extrac
 FID / CMMD / FD-DINOv2 features and pooled vertex angles, which are gathered to rank 0 for
 the final distances. Results are printed (`combra metrics: …`) and logged to TensorBoard
 under `Metrics/combra_*`. combra is optional; if it is not installed, training prints a
-warning at startup and continues. Install it with `pip install -e ../wc_cv/combra`.
+warning at startup and continues. Install it with `pip install -e '.[combra]'` (requires
+GitHub auth — see [Installation](#installation)).
 
 ## Generation
 
@@ -149,10 +164,10 @@ The original StyleSwin documentation follows.
 
 ## Requirements
 
-To install the dependencies:
+To install the dependencies (see [Installation](#installation) for the full CUDA/torch setup):
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
 ## Generating image samples with pretrained model

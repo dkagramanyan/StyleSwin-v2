@@ -9,7 +9,9 @@ StyleSwin itself has no separate weights to fetch -- it is a GAN trained from
 scratch -- so this only warms the combra backbones (the analog of edm2's
 ``download_models.py``, minus the latent-diffusion VAE).
 
-    python download_models.py
+Installed by ``pip install -e .`` as the ``styleswin-download-models`` command:
+
+    styleswin-download-models
 """
 
 import click

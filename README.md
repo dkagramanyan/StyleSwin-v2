@@ -83,10 +83,11 @@ pip install -e '.[combra]'
 ```
 
 The combra metrics pull InceptionV3 / CLIP / DINOv2 backbones from the network on first use.
-Pre-fetch and cache them for offline / cluster nodes with:
+`pip install -e .` installs a `styleswin-download-models` command that pre-fetches and caches
+them for offline / cluster nodes:
 
 ```bash
-python download_models.py
+styleswin-download-models
 ```
 
 The `sbatch/` scripts `module load CUDA/13.1` and derive `CUDA_HOME` from the loaded `nvcc`.

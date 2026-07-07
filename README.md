@@ -60,20 +60,29 @@ original unconditional path unchanged):
 
 ## Installation
 
-Create a `python=3.12` conda env, install the latest PyTorch (CUDA 13.2 wheels), the CUDA
-compiler (`nvcc`) and ninja **from conda** (both needed to build the custom CUDA ops in
-`op/` — a pip ninja conflicts with conda's, and the torch wheel ships no `nvcc`), then the
-remaining deps. torch and ninja are intentionally kept out of `requirements.txt`:
+The `op/` CUDA ops (`fused_act`, `upfirdn2d`) are JIT-compiled by torch on first import, so the
+env needs `nvcc` and `ninja`. `nvcc` comes from the system CUDA module (`module load CUDA/13.1`,
+loaded by the `sbatch/` scripts); `ninja` — torch's build backend — is installed from conda (a
+pip `ninja` conflicts with conda's). torch itself is installed from the CUDA wheel index:
 
 ```bash
 conda create -n styleswin python=3.12 -y && conda activate styleswin
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu132
-conda install -c nvidia cuda-nvcc -y     # match torch's CUDA major (13.x)
-conda install anaconda::ninja -y
-pip install -r requirements.txt          # from the StyleSwin-v2 repo root
+conda install anaconda::ninja -y         # torch's JIT build backend
+pip install -e .                         # base deps, from the repo root (reads pyproject.toml)
+pip install -e '.[combra]'               # optional: combra in-training metrics (see below)
 ```
 
-The `sbatch/` scripts load no system CUDA module — they set `CUDA_HOME=$CONDA_PREFIX`.
+**combra is a private repo**, so the `.[combra]` extra clones it over `git+https` and only
+succeeds when you are authenticated to GitHub. Sign in once with the GitHub CLI and `pip`
+inherits its credential helper:
+
+```bash
+gh auth login        # github.com → HTTPS
+pip install -e '.[combra]'
+```
+
+The `sbatch/` scripts `module load CUDA/13.1` and derive `CUDA_HOME` from the loaded `nvcc`.
 
 ## Data preparation
 
@@ -116,7 +125,8 @@ ranks**: each rank generates its slice of a fixed 10 000-image sample and extrac
 FID / CMMD / FD-DINOv2 features and pooled vertex angles, which are gathered to rank 0 for
 the final distances. Results are printed (`combra metrics: …`) and logged to TensorBoard
 under `Metrics/combra_*`. combra is optional; if it is not installed, training prints a
-warning at startup and continues. Install it with `pip install -e ../wc_cv/combra`.
+warning at startup and continues. Install it with `pip install -e '.[combra]'` (requires
+GitHub auth — see [Installation](#installation)).
 
 ## Generation
 
@@ -149,11 +159,7 @@ The original StyleSwin documentation follows.
 
 ## Requirements
 
-To install the dependencies:
-
-```bash
-python -m pip install -r requirements.txt
-```
+See [Installation](#installation) above for the full env setup (conda + torch + `pip install -e .`).
 
 ## Generating image samples with pretrained model
 

@@ -20,8 +20,10 @@ export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 
 # H200 (Hopper sm_90) + persistent kernel cache for fast startup.
-# Use the CUDA toolkit from the active conda env (no system CUDA module loaded).
-export CUDA_HOME="${CONDA_PREFIX}"
+# Use the system CUDA toolkit (provides nvcc to JIT-build op/); derive CUDA_HOME
+# from nvcc's location so it tracks the loaded module.
+module load CUDA/13.1
+export CUDA_HOME="$(dirname "$(dirname "$(command -v nvcc)")")"
 export TORCH_CUDA_ARCH_LIST="9.0"
 export TORCH_EXTENSIONS_DIR="${HOME}/.cache/torch_extensions"
 export CUDA_CACHE_PATH="${HOME}/.cache/cuda_cache"

@@ -23,6 +23,7 @@ except ImportError:
 
 import time
 
+import dnnlib
 from dataset.dataset import MultiResolutionDataset
 from models.discriminator import Discriminator
 from models.generator import Generator
@@ -377,6 +378,7 @@ if __name__ == "__main__":
         builtins.print = print_pass
 
     if get_rank() == 0:
+        dnnlib.util.Logger(should_flush=True)
         args.sample_path = os.path.join(args.sample_path, 'samples')
         if not os.path.exists(args.sample_path):
             os.mkdir(args.sample_path)

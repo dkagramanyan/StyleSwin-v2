@@ -16,6 +16,7 @@ import numpy as np
 import os
 import shutil
 import sys
+import time
 import types
 import io
 import pickle
@@ -65,9 +66,25 @@ class Logger(object):
         self.should_flush = should_flush
         self.stdout = sys.stdout
         self.stderr = sys.stderr
+        self._at_line_start = True
 
         sys.stdout = self
         sys.stderr = self
+
+    def _add_timestamps(self, text: str) -> str:
+        """Prefix each written line with a local system timestamp."""
+        ts = time.strftime('[%Y-%m-%d %H:%M:%S] ')
+        segments = text.split('\n')
+        out = []
+        for i, seg in enumerate(segments):
+            at_start = self._at_line_start if i == 0 else True
+            if at_start and seg:
+                out.append(ts)
+            out.append(seg)
+            if i < len(segments) - 1:
+                out.append('\n')
+        self._at_line_start = text.endswith('\n')
+        return ''.join(out)
 
     def __enter__(self) -> "Logger":
         return self
@@ -81,6 +98,8 @@ class Logger(object):
             text = text.decode()
         if len(text) == 0: # workaround for a bug in VSCode debugger: sys.stdout.write(''); sys.stdout.flush() => crash
             return
+
+        text = self._add_timestamps(text)
 
         if self.file is not None:
             self.file.write(text)

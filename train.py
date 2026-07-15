@@ -149,7 +149,7 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--snap',        help='How often to snapshot/eval', metavar='TICKS',    type=click.IntRange(min=1), default=50, show_default=True)
 @click.option('--metrics',     help='(reserved for parity; combra is the metric)', metavar='STR', type=str, default='none', show_default=True)
 @click.option('--combra-metrics', help='Compute combra metrics each snapshot tick', metavar='BOOL', type=bool, default=True, show_default=True)
-@click.option('--save-inference-only', help='Also save a small G_ema-only snapshot each tick', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--save-inference-only', help='Save only a small G_ema-only snapshot each tick (skip the full checkpoint)', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--seed',        help='Random seed', metavar='INT',                     type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--workers',     help='DataLoader worker processes', metavar='INT',     type=click.IntRange(min=1), default=3, show_default=True)
 @click.option('--resume',      help='Resume from a network .pt checkpoint', metavar='PATH', type=str)

@@ -599,10 +599,11 @@ def training_loop(
                     'd_optim': d_optim.state_dict(), 'cur_nimg': cur_nimg,
                     'n_classes': n_classes, 'size': resolution,
                 }
-                torch.save(ckpt, os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pt'))
                 if save_inference_only:
                     torch.save({'g_ema': g_ema.state_dict(), 'n_classes': n_classes, 'size': resolution},
                                os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}-inference.pt'))
+                else:
+                    torch.save(ckpt, os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pt'))
 
                 fid_key = 'combra_fid10k' if 'combra_fid10k' in stats_metrics else None
                 if fid_key is not None and stats_metrics[fid_key] < best_fid:

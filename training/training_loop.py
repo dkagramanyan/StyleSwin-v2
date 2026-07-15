@@ -19,6 +19,7 @@ one-hot label into its mapping network (san-v2 technique) and the discriminator 
 a projection term (Miyato & Koyama). ``n_classes == 0`` keeps the unconditional path.
 """
 
+import glob
 import importlib.util
 import json
 import math
@@ -288,6 +289,7 @@ def training_loop(
     workers                 = 3,
     combra_metrics          = True,
     save_inference_only     = False,
+    snapshot_keep_last      = 3,
     fake_label_sampling     = 'empirical',
     resume                  = None,
     # Model / optimizer hyperparameters (StyleSwin defaults).
@@ -599,11 +601,18 @@ def training_loop(
                     'd_optim': d_optim.state_dict(), 'cur_nimg': cur_nimg,
                     'n_classes': n_classes, 'size': resolution,
                 }
-                if save_inference_only:
-                    torch.save({'g_ema': g_ema.state_dict(), 'n_classes': n_classes, 'size': resolution},
-                               os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}-inference.pt'))
-                else:
-                    torch.save(ckpt, os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pt'))
+                # Inference history: only G_ema (+ n_classes/size) -- the part used for inference.
+                # One small file per snapshot, capped to the most recent `snapshot_keep_last`.
+                torch.save({'g_ema': g_ema.state_dict(), 'n_classes': n_classes, 'size': resolution},
+                           os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}-inference.pt'))
+                if snapshot_keep_last > 0:
+                    old_snaps = sorted(glob.glob(os.path.join(run_dir, 'network-snapshot-*-inference.pt')))
+                    for old in old_snaps[:-snapshot_keep_last]:
+                        os.remove(old)
+                # Full resume checkpoint: a single file overwritten each tick, so it never accumulates.
+                # Skipped entirely when --save-inference-only is set (best_model.pt stays full for resume).
+                if not save_inference_only:
+                    torch.save(ckpt, os.path.join(run_dir, 'network-snapshot-latest.pt'))
 
                 fid_key = 'combra_fid10k' if 'combra_fid10k' in stats_metrics else None
                 if fid_key is not None and stats_metrics[fid_key] < best_fid:

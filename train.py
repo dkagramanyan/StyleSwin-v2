@@ -150,6 +150,7 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--metrics',     help='(reserved for parity; combra is the metric)', metavar='STR', type=str, default='none', show_default=True)
 @click.option('--combra-metrics', help='Compute combra metrics each snapshot tick', metavar='BOOL', type=bool, default=True, show_default=True)
 @click.option('--save-inference-only', help='Save only a small G_ema-only snapshot each tick (skip the full checkpoint)', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--snapshot-keep-last', help='Keep only the most recent N inference snapshots (0 = keep all)', metavar='INT', type=click.IntRange(min=0), default=3, show_default=True)
 @click.option('--seed',        help='Random seed', metavar='INT',                     type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--workers',     help='DataLoader worker processes', metavar='INT',     type=click.IntRange(min=1), default=3, show_default=True)
 @click.option('--resume',      help='Resume from a network .pt checkpoint', metavar='PATH', type=str)
@@ -207,6 +208,7 @@ def main(**kwargs):
         workers=opts.workers,
         combra_metrics=opts.combra_metrics,
         save_inference_only=opts.save_inference_only,
+        snapshot_keep_last=opts.snapshot_keep_last,
         fake_label_sampling=opts.fake_label_sampling,
         resume=opts.resume,
         style_dim=opts.style_dim,

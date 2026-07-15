@@ -49,5 +49,6 @@ python train.py --outdir=./runs/wc-cv_h200 \
         --cond True \
         --combra-metrics True \
         --save-inference-only True \
+        --snapshot-keep-last 3 \
         --kimg 25000 \
         --snap 50

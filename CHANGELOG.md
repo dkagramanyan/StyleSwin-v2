@@ -56,10 +56,14 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
   repeated per-tick failures).
 
 ### Changed
-- `--save-inference-only True` now writes **only** the G_ema-only
-  `network-snapshot-<kimg>-inference.pt` each snapshot tick and **skips** the full
-  `network-snapshot-<kimg>.pt`; previously it wrote both. `best_model.pt` is still a full
-  checkpoint (`training/training_loop.py`).
+- **Bounded checkpoint storage** so long runs no longer fill the disk (`training/training_loop.py`,
+  `train.py`, `sbatch/train_*.sbatch`):
+  - Each snapshot tick writes a small `network-snapshot-<kimg>-inference.pt` (G_ema-only — the
+    part used for inference); `--snapshot-keep-last N` (default `3`) keeps only the most recent
+    `N` and deletes the rest (`0` = keep all).
+  - The full checkpoint is now a single `network-snapshot-latest.pt` **overwritten each tick**
+    (never accumulates) instead of one `network-snapshot-<kimg>.pt` per tick; `--save-inference-only
+    True` skips it entirely. `best_model.pt` is still a full checkpoint.
 - `sbatch/train_*.sbatch` select the resolution via `--cfg styleswin-<res>` and reference the
   dataset by its real name `./datasets/imagenet_9to4_1024x1024_<res>.zip`.
 - PyTorch install target is the CUDA 13.2 wheel index; `requirements.txt` drops the pinned

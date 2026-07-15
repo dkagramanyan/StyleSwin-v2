@@ -48,7 +48,7 @@ python train.py --outdir=./runs/wc-cv_h200 \
         --gpus=2 \
         --cond True \
         --combra-metrics True \
-        --save-inference-only True \
+        --save-inference-only 0 \
         --snapshot-keep-last 3 \
         --kimg 25000 \
         --snap 50

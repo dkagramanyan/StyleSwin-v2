@@ -1,11 +1,12 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""CPU smoke tests for the CLI contract (§2/§4).
+"""Smoke tests for the CLI contract (§2/§4).
 
 These parse ``--help`` for each console entry point and assert the contract flags exist and
-the removed ones are gone. They need torch (imported by the training/generation modules), so
-they self-skip where torch is not installed (e.g. the lint-only CI runner).
+the removed ones are gone. Importing the training/generation modules pulls in the ``op`` CUDA
+extension, which JIT-compiles on import and needs a CUDA toolchain, so these self-skip when
+torch is missing or no CUDA device is available (e.g. the CPU CI runner).
 """
 
 import importlib.util
@@ -14,8 +15,16 @@ import sys
 
 import pytest
 
-pytestmark = pytest.mark.skipif(importlib.util.find_spec('torch') is None,
-                                reason='torch not installed (CPU-only runner)')
+
+def _cuda_unavailable():
+    if importlib.util.find_spec('torch') is None:
+        return True
+    import torch
+    return not torch.cuda.is_available()
+
+
+pytestmark = pytest.mark.skipif(_cuda_unavailable(),
+                                reason='no CUDA toolchain (the op extension compiles on import)')
 
 
 def _help(script):

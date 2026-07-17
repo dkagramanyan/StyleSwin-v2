@@ -1,5 +1,7 @@
 # StyleSwin-v2 (WC-Co fork)
 
+[![CI](https://github.com/dkagramanyan/StyleSwin-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/dkagramanyan/StyleSwin-v2/actions/workflows/ci.yml)
+
 This fork (`StyleSwin-v2`) specialises Microsoft's
 [StyleSwin](https://github.com/microsoft/StyleSwin) (a Swin-transformer StyleGAN) for
 generating **WC-Co microstructure SEM images** (the `imagenet_9to4` dataset, three grain
@@ -118,6 +120,21 @@ labels **verbatim**. Under the alphabetical convention the indices map `0 → Ul
 `training_options.json` before assuming either convention. Newly built zips (via
 `styleswin-prepare-data`) record `class_names`, which travel into every checkpoint and generated
 h5, so new artifacts are self-describing.
+
+## Development
+
+Install the dev extra (ruff + pytest) and run the same checks as CI
+(`.github/workflows/ci.yml` — a ruff lint job + CPU smoke tests on Python 3.11):
+
+```bash
+pip install -e '.[dev]'
+ruff check .
+pytest
+```
+
+The test suite is CPU-only: the `dataset_tool` and `RankH5` tests (`tests/`) run everywhere;
+the CLI-contract smoke tests self-skip where there is no CUDA toolchain, since importing the
+training/generation stack JIT-compiles the `op` extension.
 
 ## Citing StyleSwin
 

@@ -6,11 +6,13 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-import re
 import contextlib
+import re
+import warnings
+
 import numpy as np
 import torch
-import warnings
+
 import dnnlib
 
 #----------------------------------------------------------------------------
@@ -288,5 +290,6 @@ def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
 # Added by Katja
 import os
 
+
 def get_ckpt_path(run_dir):
-    return os.path.join(run_dir, f'network-snapshot.pkl')
+    return os.path.join(run_dir, 'network-snapshot.pkl')

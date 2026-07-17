@@ -8,14 +8,16 @@
 
 """Streaming images and labels from datasets created with dataset_tool.py."""
 
-import os
-import numpy as np
-import zipfile
-import PIL.Image
-import json
-import torch
-import dnnlib
 import copy
+import json
+import os
+import zipfile
+
+import numpy as np
+import PIL.Image
+import torch
+
+import dnnlib
 
 try:
     import pyspng
@@ -38,6 +40,7 @@ class Dataset(torch.utils.data.Dataset):
         self._use_labels = use_labels
         self._raw_labels = None
         self._label_shape = None
+        self._raw_class_names = None
 
         # Apply max_size.
         self._raw_idx = np.arange(self._raw_shape[0], dtype=np.int64)
@@ -165,6 +168,18 @@ class Dataset(torch.utils.data.Dataset):
     def has_onehot_labels(self):
         return self._get_raw_labels().dtype == np.int64
 
+    def _load_raw_class_names(self):  # to be overridden by subclass
+        return None
+
+    @property
+    def class_names(self):
+        # Grain-class names travelling with the artifact (Rule 2); falls back to string
+        # indices for a legacy zip that predates the class_names field.
+        if self._raw_class_names is None:
+            names = self._load_raw_class_names() if self._use_labels else None
+            self._raw_class_names = list(names) if names else [str(i) for i in range(self.label_dim)]
+        return self._raw_class_names
+
 #----------------------------------------------------------------------------
 
 class ImageFolderDataset(Dataset):
@@ -233,6 +248,10 @@ class ImageFolderDataset(Dataset):
         if image.ndim == 2:
             image = image[:, :, np.newaxis] # HW => HWC
         image = image.transpose(2, 0, 1) # HWC => CHW
+        # RGB is fixed at build time (§5); assert 3 channels instead of silently converting.
+        assert image.shape[0] == 3, (
+            f'dataset image has {image.shape[0]} channels, expected 3 -- rebuild the dataset '
+            'RGB with `styleswin-prepare-data convert`')
         return image
 
     def _load_raw_labels(self):
@@ -248,5 +267,12 @@ class ImageFolderDataset(Dataset):
         labels = np.array(labels)
         labels = labels.astype({1: np.int64, 2: np.float32}[labels.ndim])
         return labels
+
+    def _load_raw_class_names(self):
+        fname = 'dataset.json'
+        if fname not in self._all_fnames:
+            return None
+        with self._open_file(fname) as f:
+            return json.load(f).get('class_names')
 
 #----------------------------------------------------------------------------

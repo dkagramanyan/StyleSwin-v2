@@ -8,8 +8,7 @@ import torch.utils.checkpoint as checkpoint
 from timm.layers import to_2tuple, trunc_normal_
 from torch import nn
 
-from models.basic_layers import (EqualLinear, PixelNorm,
-                                 SinusoidalPositionalEmbedding, Upsample)
+from models.basic_layers import EqualLinear, PixelNorm, SinusoidalPositionalEmbedding, Upsample
 
 
 class ToRGB(nn.Module):
@@ -441,7 +440,7 @@ class BilinearUpsample(nn.Module):
 
     def __init__(self, input_resolution, dim, out_dim=None):
         super().__init__()
-        assert dim % 2 == 0, f"x dim are not even."
+        assert dim % 2 == 0, "x dim are not even."
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear')
         self.norm = nn.LayerNorm(dim)
         self.reduction = nn.Linear(dim, out_dim, bias=False)

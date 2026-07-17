@@ -9,18 +9,14 @@
 """Tool for creating ZIP/PNG based datasets."""
 
 import functools
-import gzip
 import io
 import json
 import os
-import pickle
 import re
 import sys
-import tarfile
 import zipfile
 from pathlib import Path
 from typing import Callable, Optional, Tuple, Union
-import imageio
 
 import click
 import numpy as np
@@ -72,10 +68,10 @@ def open_imagenet(source_dir, *, max_images: Optional[int]):
     labels = []
 
     input_dirs = [str(f) for f in sorted(Path(source_dir).rglob('Data/CLS-LOC/train/*'))]
-    for idx, input_dir in enumerate(input_dirs):
+    for input_dir in input_dirs:
         input_images = [str(f) for f in sorted(Path(input_dir).rglob('*')) if is_image_ext(f) and os.path.isfile(f)]
         images.extend(input_images)
-        labels.extend([idx] * len(input_images))
+        labels.extend([os.path.basename(input_dir)] * len(input_images))  # class name
 
     max_idx = maybe_min(len(images), max_images)
 
@@ -83,7 +79,7 @@ def open_imagenet(source_dir, *, max_images: Optional[int]):
         for idx, fname in enumerate(images):
             img = PIL.Image.open(fname)  # type: ignore
             img = np.array(img)
-            yield dict(img=img, label=labels[idx])
+            yield dict(img=img, cls_name=labels[idx])
             if idx >= max_idx-1:
                 break
 
@@ -262,7 +258,7 @@ def convert_dataset(
 
     dataset_attrs = None
 
-    labels = []
+    entries = []
     for idx, image in tqdm(enumerate(input_iter), total=num_files):
         if image['img'].ndim == 2:
             continue
@@ -304,11 +300,15 @@ def convert_dataset(
         image_bits = io.BytesIO()
         img.save(image_bits, format='png', compress_level=0, optimize=False)
         save_bytes(os.path.join(archive_root_dir, archive_fname), image_bits.getbuffer())
-        labels.append([archive_fname, image['label']] if image['label'] is not None else None)
+        entries.append((archive_fname, image['cls_name']))
 
-    metadata = {
-        'labels': labels if all(x is not None for x in labels) else None
-    }
+    # Alphabetical class order (Rule 1) + class_names travelling with the artifact (Rule 2).
+    cls_names = sorted({c for _f, c in entries if c is not None})
+    metadata = {'labels': None, 'class_names': None}
+    if cls_names and all(c is not None for _f, c in entries):
+        cls_to_idx = {name: i for i, name in enumerate(cls_names)}
+        metadata['labels'] = [[f, cls_to_idx[c]] for f, c in entries]
+        metadata['class_names'] = cls_names
     save_bytes(os.path.join(archive_root_dir, 'dataset.json'), json.dumps(metadata))
     close_dest()
 

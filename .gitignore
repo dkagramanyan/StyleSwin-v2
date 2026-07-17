@@ -1,1 +1,15 @@
-__pycache__
+# Training / generation outputs
+runs/
+training-runs/
+datasets/
+generated/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/

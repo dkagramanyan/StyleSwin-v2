@@ -5,9 +5,10 @@ import math
 
 import numpy as np
 import torch
-from op import fused_leaky_relu, upfirdn2d
 from torch import nn
 from torch.nn import functional as F
+
+from op import fused_leaky_relu, upfirdn2d
 
 
 class Blur(nn.Module):

@@ -1,24 +1,24 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Train StyleSwin with a san-v2-style click CLI.
+"""Train StyleSwin with the shared model-API click CLI (``styleswin-train``).
 
-This is the primary training entry point. It mirrors san-v2's API (``--outdir``,
-``--data``, ``--gpus``, ``--batch-gpu``, ``--kimg``, ``--tick``, ``--snap``,
-``--combra-metrics``, ``--save-inference-only`` ...) while keeping StyleSwin's own model
-flags. The heavy lifting -- the kimg/tick loop, san-v2-style logging and the sharded
-combra metrics -- lives in ``training/training_loop.py``. The generator/discriminator
-update math is unchanged from the original ``train_styleswin.py``.
+Mirrors the cross-model training convention -- ``--outdir/--data/--gpus/--batch-gpu/--cfg``,
+kimg/ticks (``--kimg/--tick/--snap``), the ``--precision/--tf32/--bench`` scheme, the single
+``--mirror`` loader-level flip, and the ``--grad-accum`` batch formula -- while keeping
+StyleSwin's own model flags. The kimg/tick loop, logging, checkpoint contract and sharded
+combra metrics live in ``training/training_loop.py``; the generator/discriminator update
+math is unchanged from upstream StyleSwin.
 
 Class conditioning uses the san-v2 generator technique (embed the one-hot label into the
 mapping network) and a Miyato & Koyama projection discriminator. Pass ``--cond True`` to
-enable it; ``n_classes`` is read from the dataset's ``dataset.json``.
+enable it; ``n_classes`` and ``class_names`` are read from the dataset's ``dataset.json``.
 
 Example (single stage, conditional, 2 GPUs):
 
-    python train.py --outdir=./runs --data=./datasets/imagenet_9to4_256x256.zip \\
+    styleswin-train --outdir=./runs --data=./datasets/imagenet_9to4_256x256.zip \\
         --gpus=2 --batch-gpu=16 --cond True --combra-metrics True \\
-        --kimg 25000 --snap 50 --save-inference-only True
+        --kimg 25000 --snap 50
 """
 
 import json
@@ -34,12 +34,11 @@ from torch_utils import training_stats
 from training import training_loop
 
 #----------------------------------------------------------------------------
-# Per-resolution training presets, selected with --cfg (mirrors san-v2's / DiffiT's
-# --cfg convention). The StyleSwin generator and discriminator are resolution-parametric
-# -- they are built from the dataset resolution -- so today these presets differ only in the
-# memory-bound batch size; the remaining model/optimizer knobs are bundled here so each
-# resolution has a single place to tune. Any explicit CLI flag overrides the preset value.
-# Keys are the click parameter names.
+# Per-resolution presets, selected with --cfg. The StyleSwin generator/discriminator are
+# resolution-parametric (built from the dataset resolution), so today these presets differ
+# only in the memory-bound batch size; the remaining knobs are bundled here so each
+# resolution has one place to tune. Any explicit CLI flag overrides the preset. Keys are
+# click parameter names.
 
 RESOLUTION_CONFIGS = {
     'styleswin-256':  dict(size=256,  batch_gpu=64, enable_full_resolution=8,
@@ -56,7 +55,11 @@ RESOLUTION_CONFIGS = {
 #----------------------------------------------------------------------------
 
 def subprocess_fn(rank, c, temp_dir):
-    dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
+    # Rank-0-only run log, named after the run directory (§7). Other ranks stay on stdout;
+    # under SLURM their output lands in slurm-<jobid>.out.
+    if rank == 0:
+        log_name = os.path.basename(c.run_dir) + '.log'
+        dnnlib.util.Logger(file_name=os.path.join(c.run_dir, log_name), file_mode='a', should_flush=True)
 
     if c.num_gpus > 1:
         init_file = os.path.abspath(os.path.join(temp_dir, '.torch_distributed_init'))
@@ -75,6 +78,7 @@ def subprocess_fn(rank, c, temp_dir):
 def launch_training(c, desc, outdir, dry_run):
     dnnlib.util.Logger(should_flush=True)
 
+    # A fresh run id is always allocated -- existing directories are never reused (§2).
     prev_run_dirs = []
     if os.path.isdir(outdir):
         prev_run_dirs = [x for x in os.listdir(outdir) if os.path.isdir(os.path.join(outdir, x))]
@@ -90,7 +94,7 @@ def launch_training(c, desc, outdir, dry_run):
     print()
     print(f'Output directory:    {c.run_dir}')
     print(f'Number of GPUs:      {c.num_gpus}')
-    print(f'Batch size:          {c.loop.batch_gpu * c.num_gpus} images')
+    print(f'Batch size:          {c.loop.batch_gpu * c.num_gpus * c.loop.grad_accum} images')
     print(f'Training duration:   {c.loop.total_kimg} kimg')
     print(f'Dataset path:        {c.loop.data_path}')
     print(f'Dataset resolution:  {c.loop.resolution}')
@@ -117,16 +121,17 @@ def launch_training(c, desc, outdir, dry_run):
 #----------------------------------------------------------------------------
 
 def _dataset_info(data_path, lmdb, size, cond):
-    """Return (resolution, n_classes, name) for the dataset."""
+    """Return (resolution, n_classes, class_names, name) for the dataset."""
     if lmdb:
-        return size, 0, os.path.splitext(os.path.basename(data_path.rstrip('/')))[0]
+        return size, 0, None, os.path.splitext(os.path.basename(data_path.rstrip('/')))[0]
     from dataset.imagenet_dataset import ImageFolderDataset
     try:
         ds = ImageFolderDataset(path=data_path, use_labels=cond)
     except IOError as err:
         raise click.ClickException(f'--data: {err}')
     n_classes = ds.label_dim if (cond and ds.has_labels) else 0
-    return ds.resolution, n_classes, ds.name
+    class_names = ds.class_names if (cond and ds.has_labels) else None
+    return ds.resolution, n_classes, class_names, ds.name
 
 #----------------------------------------------------------------------------
 
@@ -135,11 +140,12 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--outdir',      help='Where to save the results', metavar='DIR',       required=True)
 @click.option('--data',        help='Training data', metavar='[ZIP|DIR]',             type=str, required=True)
 @click.option('--gpus',        help='Number of GPUs to use', metavar='INT',           type=click.IntRange(min=1), required=True)
-@click.option('--batch-gpu',   help='Batch size per GPU (total = batch-gpu * gpus); from --cfg if omitted', metavar='INT', type=click.IntRange(min=1), default=None)
+@click.option('--batch-gpu',   help='Batch size per GPU (total = batch-gpu * gpus * grad-accum); from --cfg if omitted', metavar='INT', type=click.IntRange(min=1), default=None)
 @click.option('--cfg',         help='Per-resolution preset', type=click.Choice(list(RESOLUTION_CONFIGS)), default=None, show_default=True)
+@click.option('--grad-accum',  help='Gradient-accumulation micro-steps per optimizer step', metavar='INT', type=click.IntRange(min=1), default=1, show_default=True)
 # Conditioning / dataset.
 @click.option('--cond',        help='Train class-conditional model', metavar='BOOL',  type=bool, default=False, show_default=True)
-@click.option('--mirror',      help='Enable dataset x-flips', metavar='BOOL',         type=bool, default=False, show_default=True)
+@click.option('--mirror',      help='Stochastic per-item horizontal flip in the training loader', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--lmdb',        help='Use a legacy LMDB dataset (unconditional)', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--size',        help='Image resolution (lmdb only; else read from data)', metavar='INT', type=click.IntRange(min=4), default=256, show_default=True)
 @click.option('--fake-label-sampling', help='Fake-label distribution', type=click.Choice(['empirical', 'uniform']), default='empirical', show_default=True)
@@ -147,17 +153,21 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--kimg',        help='Total training duration', metavar='KIMG',        type=click.IntRange(min=1), default=25000, show_default=True)
 @click.option('--tick',        help='How often to print progress', metavar='KIMG',    type=click.IntRange(min=1), default=4, show_default=True)
 @click.option('--snap',        help='How often to snapshot/eval', metavar='TICKS',    type=click.IntRange(min=1), default=50, show_default=True)
-@click.option('--metrics',     help='(reserved for parity; combra is the metric)', metavar='STR', type=str, default='none', show_default=True)
 @click.option('--combra-metrics', help='Compute combra metrics each snapshot tick', metavar='BOOL', type=bool, default=True, show_default=True)
-@click.option('--save-inference-only', help='Save only a small G_ema-only snapshot each tick (skip the full checkpoint)', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--num-fid-samples', help='Fakes generated for the combra image metrics (0 disables eval)', metavar='INT', type=click.IntRange(min=0), default=10000, show_default=True)
+@click.option('--combra-ref-count', help='Cap the combra reference to a seeded random subset (0 = whole set)', metavar='INT', type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--snapshot-keep-last', help='Keep only the most recent N inference snapshots (0 = keep all)', metavar='INT', type=click.IntRange(min=0), default=3, show_default=True)
 @click.option('--seed',        help='Random seed', metavar='INT',                     type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--workers',     help='DataLoader worker processes', metavar='INT',     type=click.IntRange(min=1), default=3, show_default=True)
-@click.option('--resume',      help='Resume from a network .pt checkpoint', metavar='PATH', type=str)
 @click.option('--desc',        help='String to include in the run dir name', metavar='STR', type=str)
 @click.option('-n', '--dry-run', help='Print training options and exit', is_flag=True)
+# Precision.
+@click.option('--precision',   help='Training precision', type=click.Choice(['fp32', 'fp16', 'bf16']), default='fp32', show_default=True)
+@click.option('--tf32',        help='Allow TF32 matmul/cuDNN', metavar='BOOL',        type=bool, default=True, show_default=True)
+@click.option('--bench',       help='Enable cuDNN autotune (benchmark)', metavar='BOOL', type=bool, default=True, show_default=True)
 # StyleSwin model / optimizer hyperparameters.
 @click.option('--style-dim',   help='Style (latent) dimension', metavar='INT',        type=click.IntRange(min=1), default=512, show_default=True)
+@click.option('--n-mlp',       help='Mapping-network depth', metavar='INT',           type=click.IntRange(min=1), default=8, show_default=True)
 @click.option('--lr-mlp',      help='LR multiplier for the mapping MLP', metavar='FLOAT', type=float, default=0.01, show_default=True)
 @click.option('--enable-full-resolution', help='Full-attention resolution index', metavar='INT', type=click.IntRange(min=1), default=8, show_default=True)
 @click.option('--g-channel-multiplier', help='Generator channel multiplier', metavar='INT', type=click.IntRange(min=1), default=1, show_default=True)
@@ -171,7 +181,6 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--bcr',         help='Enable bCR consistency regularization', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--d-sn',        help='Spectral norm in D', metavar='BOOL',             type=bool, default=False, show_default=True)
 @click.option('--use-checkpoint', help='Gradient checkpointing in G', metavar='BOOL', type=bool, default=False, show_default=True)
-@click.option('--use-flip',    help='Random horizontal flip augmentation', metavar='BOOL', type=bool, default=False, show_default=True)
 def main(**kwargs):
     opts = dnnlib.EasyDict(kwargs)
 
@@ -185,7 +194,7 @@ def main(**kwargs):
     if opts.batch_gpu is None:
         raise click.ClickException('Provide --batch-gpu, or a --cfg preset that sets it.')
 
-    resolution, n_classes, name = _dataset_info(opts.data, opts.lmdb, opts.size, opts.cond)
+    resolution, n_classes, class_names, name = _dataset_info(opts.data, opts.lmdb, opts.size, opts.cond)
 
     if opts.cfg is not None and not opts.lmdb and resolution != RESOLUTION_CONFIGS[opts.cfg]['size']:
         raise click.ClickException(
@@ -194,24 +203,30 @@ def main(**kwargs):
 
     c = dnnlib.EasyDict()
     c.num_gpus = opts.gpus
-    c.restart_every = 0
     c.loop = dnnlib.EasyDict(
         data_path=opts.data,
         resolution=resolution,
         lmdb=opts.lmdb,
         n_classes=n_classes,
+        class_names=class_names,
         batch_gpu=opts.batch_gpu,
+        grad_accum=opts.grad_accum,
         total_kimg=opts.kimg,
         kimg_per_tick=opts.tick,
         snap_ticks=opts.snap,
         random_seed=opts.seed,
         workers=opts.workers,
         combra_metrics=opts.combra_metrics,
-        save_inference_only=opts.save_inference_only,
+        num_fid_samples=opts.num_fid_samples,
+        combra_ref_count=opts.combra_ref_count,
         snapshot_keep_last=opts.snapshot_keep_last,
         fake_label_sampling=opts.fake_label_sampling,
-        resume=opts.resume,
+        mirror=opts.mirror,
+        precision=opts.precision,
+        tf32=opts.tf32,
+        bench=opts.bench,
         style_dim=opts.style_dim,
+        n_mlp=opts.n_mlp,
         lr_mlp=opts.lr_mlp,
         enable_full_resolution=opts.enable_full_resolution,
         g_channel_multiplier=opts.g_channel_multiplier,
@@ -224,15 +239,20 @@ def main(**kwargs):
         ttur=opts.ttur,
         bcr=opts.bcr,
         use_checkpoint=opts.use_checkpoint,
-        use_flip=(opts.use_flip or opts.mirror),
         D_sn=opts.d_sn,
     )
 
-    desc = f'styleswin-{name}-gpus{opts.gpus:d}-batch{opts.batch_gpu * opts.gpus:d}'
+    # Run dir: <id>-<cfg>-gpus<G>-batch<B>[-desc], B the total batch, no dataset name (§2).
+    total_batch = opts.batch_gpu * opts.gpus * opts.grad_accum
+    cfg_name = opts.cfg or 'styleswin'
+    desc = f'{cfg_name}-gpus{opts.gpus:d}-batch{total_batch:d}'
+    suffix = []
     if opts.cond:
-        desc += '-cond'
+        suffix.append('cond')
     if opts.desc is not None:
-        desc += f'-{opts.desc}'
+        suffix.append(opts.desc)
+    if suffix:
+        desc += '-' + '-'.join(suffix)
 
     launch_training(c=c, desc=desc, outdir=opts.outdir, dry_run=opts.dry_run)
 

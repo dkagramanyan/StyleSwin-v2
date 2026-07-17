@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "styleswin"
-version = "0.1.0"
+version = "0.2.0"
 description = "StyleSwin: Transformer-based GAN for high-resolution image generation (WC-Co microstructure fork)"
 readme = "README.md"
 authors = [{ name = "D.G.Kagramanyan" }]
-requires-python = ">=3.9,<3.14"
+requires-python = ">=3.10"
 
 # NOTE: torch / torchvision are installed separately from the CUDA wheel index
 # (see README). ninja is installed from conda (anaconda::ninja); a pip ninja
@@ -21,6 +21,8 @@ dependencies = [
   "requests>=2.26.0",
   "tqdm>=4.62.2",
   "psutil>=5.8.0",
+  "h5py>=3.0",
+  "imageio>=2.9",
   "lmdb",
   "timm",
   "einops",
@@ -36,19 +38,38 @@ dependencies = [
 # helper and the clone works automatically:
 #     pip install -e '.[combra]'
 combra = ["combra @ git+https://github.com/dkagramanyan/combra.git"]
+# dev: lint + the CPU smoke tests (CI installs this extra).
+dev = ["ruff", "pytest"]
 
 [project.urls]
 Repository = "https://github.com/dkagramanyan/StyleSwin-v2"
 
-# Console command to prefetch the combra metric backbones (offline / cluster nodes).
+# Console commands. The training / generation / eval / data / download entry points
+# mirror the shared model-API convention (`<model>-train`, `<model>-gen-images`,
+# `<model>-eval`, `<model>-prepare-data`, `<model>-download-models`).
 [project.scripts]
+styleswin-train = "train:main"
+styleswin-gen-images = "gen_images:main"
+styleswin-eval = "eval:main"
+styleswin-prepare-data = "dataset_tool:prepare_data"
 styleswin-download-models = "download_models:main"
 
 # This is a flat script repo (train.py, gen_images.py, loose module dirs), not an
-# importable package. Only `download_models` is exposed as a module (for the console
-# script above); the explicit list stops setuptools auto-discovery from failing on the
-# mixed top-level layout, keeps `pip install -e .` a lightweight editable shell, and
-# avoids trying to build the `op` CUDA extensions at install time. train.py / gen_images.py
-# stay run as `python <script>.py`.
+# importable package. The top-level scripts are exposed as py-modules so the console
+# scripts above resolve; the explicit list stops setuptools auto-discovery from failing
+# on the mixed top-level layout, keeps `pip install -e .` a lightweight editable shell,
+# and avoids building the `op` CUDA extensions at install time.
 [tool.setuptools]
-py-modules = ["download_models"]
+py-modules = ["train", "gen_images", "eval", "dataset_tool", "download_models"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F", "I"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

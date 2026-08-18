@@ -27,7 +27,6 @@ import types
 import urllib
 import urllib.request
 import uuid
-from distutils.util import strtobool
 from typing import Any, List, Tuple, Union
 
 import numpy as np
@@ -182,12 +181,26 @@ def format_time_brief(seconds: Union[int, float]) -> str:
         return "{0}d {1:02}h".format(s // (24 * 60 * 60), (s // (60 * 60)) % 24)
 
 
+def _strtobool(value: str) -> bool:
+    """Parse a yes/no string. Replaces ``distutils.util.strtobool``.
+
+    ``distutils`` was removed from the standard library in Python 3.12 — the floor
+    this package now requires — and setuptools' shim for it is itself deprecated.
+    """
+    value = value.strip().lower()
+    if value in ('y', 'yes', 't', 'true', 'on', '1'):
+        return True
+    if value in ('n', 'no', 'f', 'false', 'off', '0'):
+        return False
+    raise ValueError(f'invalid truth value {value!r}')
+
+
 def ask_yes_no(question: str) -> bool:
     """Ask the user the question until the user inputs a valid answer."""
     while True:
         try:
             print("{0} [y/n]".format(question))
-            return strtobool(input().lower())
+            return _strtobool(input().lower())
         except ValueError:
             pass
 

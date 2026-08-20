@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import functools
 import os
 
 import torch
@@ -11,13 +12,23 @@ from torch.nn import functional as F
 from torch.utils.cpp_extension import load
 
 module_path = os.path.dirname(__file__)
-fused = load(
-    "fused",
-    sources=[
-        os.path.join(module_path, "fused_bias_act.cpp"),
-        os.path.join(module_path, "fused_bias_act_kernel.cu"),
-    ],
-)
+
+
+@functools.cache
+def _load_fused():
+    """JIT-build the CUDA extension on first use, not at import.
+
+    Building at import meant `styleswin-train --help` could not run on a machine
+    without ninja/nvcc -- which is how three CLI-contract tests failed on a CPU-only
+    runner. Nothing outside a forward pass needs the kernels.
+    """
+    return load(
+        "fused",
+        sources=[
+            os.path.join(module_path, "fused_bias_act.cpp"),
+            os.path.join(module_path, "fused_bias_act_kernel.cu"),
+        ],
+    )
 
 
 class FusedLeakyReLUFunctionBackward(Function):
@@ -29,7 +40,7 @@ class FusedLeakyReLUFunctionBackward(Function):
 
         empty = grad_output.new_empty(0)
 
-        grad_input = fused.fused_bias_act(
+        grad_input = _load_fused().fused_bias_act(
             grad_output, empty, out, 3, 1, negative_slope, scale
         )
 
@@ -45,7 +56,7 @@ class FusedLeakyReLUFunctionBackward(Function):
     @staticmethod
     def backward(ctx, gradgrad_input, gradgrad_bias):
         out, = ctx.saved_tensors
-        gradgrad_out = fused.fused_bias_act(
+        gradgrad_out = _load_fused().fused_bias_act(
             gradgrad_input, gradgrad_bias, out, 3, 1, ctx.negative_slope, ctx.scale
         )
 
@@ -57,7 +68,7 @@ class FusedLeakyReLUFunction(Function):
     @custom_fwd(device_type='cuda', cast_inputs=torch.float32)
     def forward(ctx, input, bias, negative_slope, scale):
         empty = input.new_empty(0)
-        out = fused.fused_bias_act(input, bias, empty, 3, 0, negative_slope, scale)
+        out = _load_fused().fused_bias_act(input, bias, empty, 3, 0, negative_slope, scale)
         ctx.save_for_backward(out)
         ctx.negative_slope = negative_slope
         ctx.scale = scale

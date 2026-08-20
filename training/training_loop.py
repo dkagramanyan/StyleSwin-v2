@@ -155,108 +155,79 @@ def _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, ran
     return images.cpu().numpy()
 
 
-def _combra_angle_workers(num_gpus):
-    # Per-rank CPU processes for the angle extraction. Divided by the rank count:
-    # every rank on an 8-GPU node asking for min(32, cpu_count) oversubscribes the
-    # box eightfold and each pool then runs slower than a single shared one.
-    return max(1, min(32, (os.cpu_count() or 1) // max(1, num_gpus)))
-
-
-def _combra_gather_to_rank0(local, device, rank, num_gpus):
-    if num_gpus == 1:
-        return local
-    t = torch.from_numpy(np.ascontiguousarray(local)).to(device)
-    count = torch.tensor([t.shape[0]], device=device, dtype=torch.long)
-    counts = [torch.zeros_like(count) for _ in range(num_gpus)]
-    torch.distributed.all_gather(counts, count)
-    max_count = max(int(c.item()) for c in counts)
-    if t.shape[0] < max_count:
-        pad = torch.zeros(max_count - t.shape[0], *t.shape[1:], device=device, dtype=t.dtype)
-        t = torch.cat([t, pad], dim=0)
-    gathered = [torch.empty_like(t) for _ in range(num_gpus)]
-    torch.distributed.all_gather(gathered, t)
-    if rank != 0:
-        return None
-    rows = [gathered[i][:int(counts[i].item())].cpu().numpy() for i in range(num_gpus)]
-    return np.concatenate(rows, axis=0)
-
-
-def _combra_gather_pooled_angles(images_u8, device, rank, num_gpus):
-    from combra.metrics import images_to_pooled_angles
-    pooled = np.asarray(
-        images_to_pooled_angles(images_u8, workers=_combra_angle_workers(num_gpus)),
-        np.float32).reshape(-1, 1)
-    gathered = _combra_gather_to_rank0(pooled, device, rank, num_gpus)
-    return gathered.reshape(-1) if gathered is not None else None
-
-
 def _combra_precompute_reference(reference_u8_set, ref_indices, device, rank, num_gpus):
-    # All ranks extract pooled angles + the three feature sets from this rank's deterministic
-    # slice of the reference (raw uint8 dataset pixels, never flipped) and gather to rank 0.
-    # The purely-local extraction is separated from the gathers by a rank-uniform success
-    # handshake so a single-rank failure can never deadlock the survivors in all_gather.
-    from combra.metrics import cmmd_features, fd_dinov2_features, fid_features, images_to_pooled_angles
-    ok = True
-    local = None
-    try:
-        my = ref_indices[rank::num_gpus]
-        local_u8 = np.stack([reference_u8_set[i][0] for i in my])  # NCHW uint8
-        pooled = np.asarray(
-            images_to_pooled_angles(local_u8, workers=_combra_angle_workers(num_gpus)),
-            np.float32).reshape(-1, 1)
-        feats = {name: fn(local_u8, device=device).astype(np.float32)
-                 for name, fn in (('fid', fid_features), ('cmmd', cmmd_features),
-                                  ('fd_dinov2', fd_dinov2_features))}
-        local = {'angles': pooled, 'feat': feats}
-    except Exception as e:
-        ok = False
-        print(f'[combra][rank {rank}] reference precompute failed: {e}', flush=True)
-    if num_gpus > 1:
-        flag = torch.tensor([1.0 if ok else 0.0], device=device)
-        torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MIN)
-        ok = bool(flag.item() > 0.5)
-    if not ok:
-        return None, False
-    angles = _combra_gather_to_rank0(local['angles'], device, rank, num_gpus)
-    feat = {name: _combra_gather_to_rank0(local['feat'][name], device, rank, num_gpus)
-            for name in local['feat']}
-    if rank != 0:
-        return None, True
-    return {'angles': angles.reshape(-1), 'feat': feat}, True
+    """This rank's slice of the raw uint8 reference, extracted and gathered by combra.
+
+    Returns ``(reference, ok)``; ``ok`` is rank-uniform, so the caller can gate the
+    per-tick eval on it (``reference`` is None on every non-zero rank regardless).
+    """
+    from combra.metrics.distributed import precompute_reference
+
+    my = ref_indices[rank::num_gpus]
+    local_u8 = np.stack([reference_u8_set[i][0] for i in my])  # NCHW uint8
+    return precompute_reference(local_u8, device, rank, num_gpus)
 
 
 def _combra_eval_distributed(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank, device, combra_ref):
-    from combra.metrics import (
-        angle_density_metrics_from_pooled,
-        cmmd_features,
-        cmmd_from_features,
-        fd_dinov2_features,
-        fid_features,
-        frechet_from_features,
-    )
+    """combra metrics on rank 0, None elsewhere. Every rank MUST call this: the
+    gathers inside are collectives, so a rank that skips them hangs the others."""
+    from combra.metrics.distributed import distributed_metrics, gather_generated
 
-    local = _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank)
-    local_u8 = _denorm_to_uint8(local)
-
-    extractors = (('fid', fid_features), ('cmmd', cmmd_features), ('fd_dinov2', fd_dinov2_features))
-    gen_feats = {}
-    for name, fn in extractors:
-        feats = fn(local_u8, device=device).astype(np.float32)
-        gen_feats[name] = _combra_gather_to_rank0(feats, device, rank, num_gpus)
-
-    gen_angles = _combra_gather_pooled_angles(local_u8, device, rank, num_gpus)
-
+    local_u8 = _denorm_to_uint8(
+        _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank))
+    gen_feats, gen_angles = gather_generated(local_u8, device, rank, num_gpus)
     if rank != 0:
         return None
+    # device= so the CMMD reduction runs where the features were extracted.
+    return distributed_metrics(combra_ref, gen_angles, gen_feats, device=device)
 
-    metrics = dict(angle_density_metrics_from_pooled(combra_ref['angles'], gen_angles))
-    combiners = {'fid': frechet_from_features, 'cmmd': cmmd_from_features,
-                 'fd_dinov2': frechet_from_features}
-    for name in ('fid', 'cmmd', 'fd_dinov2'):
-        metrics[name] = combiners[name](combra_ref['feat'][name], gen_feats[name])
-    return metrics
 
-#----------------------------------------------------------------------------
+def _write_run_hparams(run_dir, writer, metrics):
+    """Record this run's configuration in TensorBoard's HPARAMS tab (§7).
+
+    The config is read back from ``training_options.json``, which the launcher has
+    already written, so no plumbing through the training-loop signature is needed.
+    Paired with the run's final metrics, this is what makes two runs comparable in
+    TensorBoard: without it the curves are there but nothing says which
+    configuration produced them, and comparing runs means diffing two JSON files.
+    """
+    import json
+    import os
+
+    try:
+        from combra.io import write_hparams
+    except ImportError:
+        return  # combra is optional; the curves are still logged
+    path = os.path.join(run_dir, 'training_options.json')
+    if not os.path.isfile(path):
+        return
+    with open(path) as fh:
+        config = json.load(fh)
+    write_hparams(writer, config, metrics)
+
+
+def build_stats_row(stats_dict, stats_metrics, timestamp, start_time):
+    """One scalar JSON row for ``stats.jsonl`` (§7).
+
+    Collector values are flattened to their means. The collector nests every
+    scalar as ``{num, mean, std}``, and ``combra.metrics.load_fid_by_kimg`` reads
+    ``Progress/kimg`` through ``int()`` -- a nested value makes it shape-filter the
+    whole record away, so every run returned ``{}`` with no error and post-hoc
+    snapshot selection silently found nothing. TensorBoard already receives
+    ``value.mean``, so flattening also makes the file carry the same keys as the
+    tags, which is what §7 asks for.
+
+    Kept as a plain function so tests can exercise the real row without running a
+    training loop.
+    """
+    row = {name: value.mean for name, value in stats_dict.items()}
+    for name, value in stats_metrics.items():
+        row[f'Metrics/{name}'] = float(value)
+    row['timestamp'] = timestamp
+    row['wall_time'] = timestamp - start_time
+    row['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    return row
+
 
 def _sample_labels(class_probs, n, n_classes, device, generator=None):
     idx = torch.multinomial(class_probs, n, replacement=True, generator=generator)
@@ -424,10 +395,17 @@ def training_loop(
     # ------------------------------------------------------------------ combra reference.
     combra_metrics = combra_metrics and num_fid_samples > 0   # --num-fid-samples 0 disables eval
     combra_installed = importlib.util.find_spec('combra') is not None
-    if combra_metrics and combra_installed and rank == 0:
+    if combra_metrics and combra_installed and rank == 0 and reference_u8_set is not None:
+        # strict=True is the point: the plain self_test() this used to call defaults to
+        # image_metrics=False, so it never touched InceptionV3 / CLIP / DINOv2 and a
+        # missing CLIP download surfaced only as a whole run logging nan for
+        # combra_fid / combra_cmmd / combra_fd_dinov2. images= scores the real
+        # reference slice rather than synthetic grains.
         try:
             from combra.metrics import self_test
-            self_test()
+            sample = np.stack([reference_u8_set[i][0]
+                               for i in range(min(4, len(reference_u8_set)))])
+            self_test(images=sample, device=device, image_metrics=True, strict=True)
         except Exception as e:
             print(f'[combra] smoke test failed: {e}', flush=True)
 
@@ -478,7 +456,7 @@ def training_loop(
             import torch.utils.tensorboard as tensorboard
             # filename_suffix stamps the event file with the run name so a copied tfevents
             # file stays self-identifying (§7).
-            stats_tfevents = tensorboard.SummaryWriter(run_dir, filename_suffix=os.path.basename(run_dir))
+            stats_tfevents = tensorboard.SummaryWriter(run_dir, filename_suffix=f'.{os.path.basename(run_dir)}')
         except ImportError as err:
             print('Skipping tfevents export:', err)
         # reals.png (once) + fakes_init.png (untrained G_ema) sample grids.
@@ -622,6 +600,7 @@ def training_loop(
 
             if combra_active:
                 stage('Evaluating combra metrics')
+                eval_start = time.time()
                 try:
                     combra_results = _combra_eval_distributed(
                         g_ema, combra_z, combra_c, batch_gpu, num_gpus, rank, device, combra_ref)
@@ -637,6 +616,7 @@ def training_loop(
                     for name, value in combra_results.items():
                         stats_metrics[f'combra_{name}'] = float(value)
                     stats_metrics['combra_num_fid_samples'] = float(num_fid_samples)
+                    training_stats.report0('Timing/eval_sec', time.time() - eval_start)
                     if 'combra_fid' in stats_metrics:
                         best_fid = min(best_fid, stats_metrics['combra_fid'])
                         stats_metrics['combra_fid_best'] = best_fid
@@ -671,12 +651,7 @@ def training_loop(
         # previous tick's values at a new step.
         stats_dict = stats_collector.as_dict()
         if stats_jsonl is not None:
-            row = dict(stats_dict)
-            for name, value in stats_metrics.items():
-                row[f'Metrics/{name}'] = value
-            row['timestamp'] = timestamp
-            row['wall_time'] = timestamp - start_time
-            row['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            row = build_stats_row(stats_dict, stats_metrics, timestamp, start_time)
             stats_jsonl.write(json.dumps(row) + '\n')
             stats_jsonl.flush()
         if stats_tfevents is not None:
@@ -698,6 +673,9 @@ def training_loop(
     if rank == 0:
         stage('Exiting')
         if stats_jsonl is not None:
+            if stats_tfevents is not None:
+                _write_run_hparams(run_dir, stats_tfevents,
+                                   {'Metrics/combra_fid_best': float(best_fid)})
             stats_jsonl.close()
 
 #----------------------------------------------------------------------------

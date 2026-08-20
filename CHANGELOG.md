@@ -5,6 +5,10 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+### Removed
+- **`todo.md`.** Every item in it was closed, so the file said nothing a reader
+  needed; the fixes are described in this changelog instead.
+
 ### Fixed
 - **`styleswin-prepare-data --max-images N` filled classes alphabetically.** A cap
   truncated a sorted (therefore class-grouped) file list, so it took every image from
@@ -16,7 +20,7 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
   build targeted the wrong SM on any other GPU. All six scripts now derive it from
   `nvidia-smi --query-gpu=compute_cap`, falling back to 9.0 when nvidia-smi is absent
   (a login node) and still yielding to an explicit value.
-- **combra is pinned to a tag (`@v0.9.1`) instead of tracking `main`.** Unpinned, every
+- **combra is pinned to a tag (`@v0.10.0`) instead of tracking `main`.** Unpinned, every
   fresh env resolved whatever combra `main` was that day, so the FID / CMMD / FD-DINOv2 /
   angle numbers a run is judged on could change with no signal and no record. combra
   0.8.0 also stamps `combra/version` into this run's TensorBoard HPARAMS, so the metric

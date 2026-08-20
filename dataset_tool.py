@@ -72,6 +72,45 @@ def maybe_min(a: int, b: Optional[int]) -> int:
 
 #----------------------------------------------------------------------------
 
+def stratified_subset(input_images: list, class_of, limit: int) -> list:
+    """Spread a `--max-images` cap across classes instead of taking the first `limit`.
+
+    `class_of` returns the class an image will be written with. The image list is
+    sorted, so it is grouped by class folder: a plain truncation takes every image
+    from the alphabetically first class and none from the rest, so a capped run
+    built a single-class dataset (and a one-entry `class_names`) from a multi-class
+    source. Picks round-robin instead, so a cap of N over C classes gives each class
+    N/C images (the leftovers go to the classes that have the most images).
+    """
+    groups: dict = {}
+    for fname in input_images:
+        groups.setdefault(class_of(fname), []).append(fname)
+    if len(groups) < 2:
+        return input_images[:limit]
+
+    keys = sorted(groups, key=lambda k: (k is None, k))
+    picked: list = []
+    depth = 0
+    while len(picked) < limit:
+        added = 0
+        for key in keys:
+            if depth < len(groups[key]):
+                picked.append(groups[key][depth])
+                added += 1
+                if len(picked) == limit:
+                    break
+        if added == 0:
+            break
+        depth += 1
+
+    covered = {class_of(fname) for fname in picked}
+    if len(covered) < len(groups):
+        print(f'Warning: --max-images={limit} is smaller than the {len(groups)} classes in the '
+              f'source, so only {len(covered)} of them are represented.')
+    return sorted(picked)
+
+#----------------------------------------------------------------------------
+
 def file_ext(name: Union[str, Path]) -> str:
     return str(name).split('.')[-1]
 
@@ -114,6 +153,12 @@ def open_image_folder(source_dir, *, max_images: Optional[int]):
     input_images = [str(f) for f in sorted(Path(source_dir).rglob('*')) if is_image_ext(f) and os.path.isfile(f)]
 
     max_idx = maybe_min(len(input_images), max_images)
+    if max_idx < len(input_images):
+        input_images = stratified_subset(
+            input_images,
+            lambda f: _class_from_archpath(os.path.relpath(f, source_dir).replace('\\', '/')),
+            max_idx)
+        max_idx = len(input_images)
 
     def iterate_images():
         for idx, fname in enumerate(input_images):
@@ -131,6 +176,9 @@ def open_image_zip(source, *, max_images: Optional[int]):
         input_images = [str(f) for f in sorted(z.namelist()) if is_image_ext(f)]
 
     max_idx = maybe_min(len(input_images), max_images)
+    if max_idx < len(input_images):
+        input_images = stratified_subset(input_images, _class_from_archpath, max_idx)
+        max_idx = len(input_images)
 
     def iterate_images():
         with zipfile.ZipFile(source, mode='r') as z:

@@ -23,6 +23,8 @@ import numpy as np
 import PIL.Image
 from tqdm import tqdm
 
+from dataset_tool import stratified_subset
+
 #----------------------------------------------------------------------------
 
 def error(msg):
@@ -74,6 +76,13 @@ def open_imagenet(source_dir, *, max_images: Optional[int]):
         labels.extend([os.path.basename(input_dir)] * len(input_images))  # class name
 
     max_idx = maybe_min(len(images), max_images)
+    if max_idx < len(images):
+        # Same cap-fills-one-class bug as dataset_tool.open_image_folder; stratify
+        # the indices so images and labels stay aligned.
+        keep = stratified_subset(list(range(len(images))), labels.__getitem__, max_idx)
+        images = [images[i] for i in keep]
+        labels = [labels[i] for i in keep]
+        max_idx = len(images)
 
     def iterate_images():
         for idx, fname in enumerate(images):

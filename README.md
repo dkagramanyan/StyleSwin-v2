@@ -48,8 +48,12 @@ pip install -e '.[combra]'               # optional: combra in-training metrics
 
 **combra is a private repo**, so the `.[combra]` extra clones it over `git+https` and only
 succeeds when authenticated to GitHub — sign in once with `gh auth login` (github.com → HTTPS)
-and `pip` inherits its credential helper. The combra metrics pull InceptionV3 / CLIP / DINOv2
-backbones on first use; `styleswin-download-models` prefetches and caches them for offline nodes.
+and `pip` inherits its credential helper. The extra requests `combra[metrics]`, not bare
+`combra`: since combra 0.5.0 the torch / `pytorch-fid` / `open-clip-torch` stack lives
+behind that extra, and without it `combra_fid`, `combra_cmmd` and `combra_fd_dinov2` come
+back `nan`. combra also floors Python at **3.12**, which is why this package does too.
+The metrics pull InceptionV3 / CLIP / DINOv2 backbones on first use;
+`styleswin-download-models` prefetches and caches them for offline nodes.
 
 ## Data preparation
 
@@ -86,7 +90,7 @@ Each run writes to `runs/.../NNNNN-<cfg>-gpus<G>-batch<B>[-desc]/` with `<runnam
 checkpoint kind — `network-snapshot-<kimg>-inference.pt` (EMA-only weights + self-describing
 metadata), written atomically every snapshot tick and always at the last tick, pruned to
 `--snapshot-keep-last`. There is **no resume**: size `--kimg` (or split stages) to fit the job's
-time limit. Pick the best snapshot post-hoc from `stats.jsonl` (`Metrics/combra_fid10k`).
+time limit. Pick the best snapshot post-hoc from `stats.jsonl` (`Metrics/combra_fid`).
 
 ## Metrics (combra)
 
@@ -94,8 +98,11 @@ With `--combra-metrics` (default), every snapshot tick scores `G_ema` against th
 set — **sharded across ranks**: each rank generates its slice of a fixed `--num-fid-samples`
 (default 10 000) sample and extracts FID / CMMD / FD-DINOv2 features + pooled vertex angles,
 gathered to rank 0 for the distances. Results are logged to TensorBoard **and** `stats.jsonl`
-under `Metrics/combra_*`. `styleswin-eval` scores a checkpoint standalone. combra is optional; if
-missing, training warns at startup and continues.
+under `Metrics/combra_*` — `combra_fid`, `combra_cmmd`, `combra_fd_dinov2`,
+`combra_fid_best`, the angle-density metrics, and `combra_num_fid_samples` recording the
+sample count the run actually used. (Keys used to carry a literal `10k` suffix that never
+tracked `--num-fid-samples`; they no longer do.) `styleswin-eval` scores a checkpoint
+standalone. combra is optional; if missing, training warns at startup and continues.
 
 ## Generation
 

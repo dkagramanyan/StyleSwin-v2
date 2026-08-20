@@ -3,6 +3,60 @@
 All notable changes to this fork (`StyleSwin-v2`, the WC-Co specialisation of StyleSwin)
 are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-08-18
+
+Repairs the combra integration, fixes two crashes on the modern Python/numpy floor,
+and closes the remaining logging-contract gaps.
+
+### Fixed
+- **combra metrics were silently disabled.** `_combra_eval_distributed` imported
+  `angle_density_metrics_from_pooled`, `fid_from_features` and
+  `fd_dinov2_from_features`, which combra removed in 0.5.0, plus `combra_smoke_test`,
+  which it renamed to `self_test`. The `except` around the per-tick eval swallowed the
+  `ImportError` and printed "metric evaluation failed", so `--combra-metrics True`
+  produced nothing at all. Now imports `frechet_from_features` (one helper for both
+  Fréchet metrics) and `self_test`; combra >= 0.7.0 restores
+  `angle_density_metrics_from_pooled`.
+- **`[combra]` installed a combra with no metric backends.** The extra pulled bare
+  `combra`; since combra 0.5.0 the torch / `pytorch-fid` / `open-clip-torch` stack is
+  behind `combra[metrics]`, so FID / CMMD / FD-DINOv2 would have returned `nan` even
+  after the import fix. Now `combra[metrics] @ git+…`.
+- **numpy >= 2 crashed training at startup.** `_assert_norm_roundtrip` built its
+  fixture with `np.arange(48, dtype=np.uint8) % 256`, and numpy 2 raises
+  `OverflowError` on the out-of-range `uint8` literal. `arange(48)` never exceeds 255,
+  so the modulo was dead; it is gone. This also removes the `numpy<2` pin that was
+  under consideration, which combra (`numpy>=2.4`) could never have satisfied.
+- **`distutils` import broke on Python 3.12+.** `dnnlib/util.py` imported `strtobool`
+  from `distutils`, removed from the standard library in 3.12 — the floor this release
+  moves to — and available only through setuptools' own deprecated shim. Replaced with
+  a local `_strtobool`.
+- **Stale metric rows.** `stats_metrics` was cleared only inside the snapshot branch,
+  so the ticks between snapshots re-emitted the previous evaluation's values at a new
+  step. It is now cleared every tick.
+
+### Changed
+- **Metric keys lost the literal `10k`.** `Metrics/combra_fid10k` was emitted whatever
+  `--num-fid-samples` said, so any chart built from it was mislabelled. Keys are now
+  bare — `Metrics/combra_fid`, `combra_cmmd`, `combra_fd_dinov2`, `combra_fid_best` —
+  and the count is logged once as `Metrics/combra_num_fid_samples`.
+- **`stats.jsonl` carries `wall_time` and `datetime`**, as the logging contract
+  requires; it previously wrote only `timestamp`.
+- **Angle-extraction workers scale with the rank count** (`cpu_count // gpus`, capped
+  at 32). Every rank asking for `min(32, cpu_count)` oversubscribed an 8-GPU node
+  eightfold.
+- `requires-python` raised to **3.12** to match combra.
+- `timm` floored at **0.9**: `models/generator.py` imports `timm.layers`, which does
+  not exist in older releases, so an unpinned resolve could install a timm that fails
+  at import.
+
+### Removed
+- `einops` from `dependencies` — declared but imported nowhere in the tree.
+
+### Added
+- `tests/test_combra_contract.py` — asserts every combra symbol this repo imports
+  actually exists. CPU-only, no GPU/dataset/network, so it runs in every CI job. This
+  is the check whose absence let the breakage above survive a whole release.
+
 ## [0.2.0] - 2026-07-17
 
 Adopt the shared generative-model API convention ("v2 convention"). Command names,

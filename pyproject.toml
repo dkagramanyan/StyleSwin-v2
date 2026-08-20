@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "styleswin"
-version = "0.2.0"
+version = "0.3.0"
 description = "StyleSwin: Transformer-based GAN for high-resolution image generation (WC-Co microstructure fork)"
 readme = "README.md"
 authors = [{ name = "D.G.Kagramanyan" }]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 # NOTE: torch / torchvision are installed separately from the CUDA wheel index
 # (see README). ninja is installed from conda (anaconda::ninja); a pip ninja
@@ -24,8 +24,7 @@ dependencies = [
   "h5py>=3.0",
   "imageio>=2.9",
   "lmdb",
-  "timm",
-  "einops",
+  "timm>=0.9",          # models/generator.py imports timm.layers (0.9+ only)
   "wandb",
   "tensorboard>=2.10",
   "pyspng>=0.1.1",
@@ -37,7 +36,12 @@ dependencies = [
 # GitHub CLI (`gh auth login`, HTTPS protocol), git inherits gh's credential
 # helper and the clone works automatically:
 #     pip install -e '.[combra]'
-combra = ["combra @ git+https://github.com/dkagramanyan/combra.git"]
+# The [metrics] extra is REQUIRED, not optional: combra 0.5.0 moved torch,
+# torchvision, pytorch-fid and open-clip-torch out of its base dependencies, so a
+# bare `combra` install has no FID / CMMD / FD-DINOv2 backend and those three
+# metrics come back nan. combra also floors Python at 3.12, which is why this
+# package does too.
+combra = ["combra[metrics] @ git+https://github.com/dkagramanyan/combra.git"]
 # dev: lint + the CPU smoke tests (CI installs this extra).
 dev = ["ruff", "pytest"]
 

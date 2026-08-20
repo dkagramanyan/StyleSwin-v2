@@ -6,7 +6,10 @@ real repo/packaging issues, not local env quirks. Env-setup notes live in
 
 ## Bugs
 
-- [ ] **numpy 2.x crashes training at startup.** `_assert_norm_roundtrip`
+- [x] **numpy 2.x crashes training at startup.** Resolved 2026-08-18: the redundant
+  `% 256` is gone (and no `numpy<2` pin was added -- combra requires `numpy>=2.4`).
+
+  Original report: `_assert_norm_roundtrip`
   (`training/training_loop.py:132`) does `np.arange(3*4*4, dtype=np.uint8) % 256`, which
   raises `OverflowError: Python integer 256 out of bounds for uint8` on numpy >= 2. A fresh
   `pip install` resolves `numpy>=1.20` to numpy 2, so training is broken out of the box.
@@ -23,11 +26,17 @@ real repo/packaging issues, not local env quirks. Env-setup notes live in
 
 ## Packaging
 
-- [ ] **`timm` is unpinned but the code needs `timm.layers`** (`models/generator.py:8`),
+- [x] **`timm` is unpinned but the code needs `timm.layers`** Resolved 2026-08-18:
+  `timm>=0.9` is declared.
+
+  Original report: (`models/generator.py:8`),
   which only exists in timm >= 0.9. An older resolved timm (0.4.12) gives
   `No module named 'timm.layers'`. Add `timm>=0.9` to `pyproject.toml`.
 
-- [ ] **`einops` is declared in `dependencies` but never imported** anywhere in the tree —
+- [x] **`einops` is declared in `dependencies` but never imported** Resolved
+  2026-08-18: removed.
+
+  Original report: anywhere in the tree —
   dead dependency; remove it, or use it.
 
 ## UX

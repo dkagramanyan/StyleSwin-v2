@@ -6,7 +6,17 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 ## [Unreleased]
 
 ### Fixed
-- **combra is pinned to a tag (`@v0.8.1`) instead of tracking `main`.** Unpinned, every
+- **`styleswin-prepare-data --max-images N` filled classes alphabetically.** A cap
+  truncated a sorted (therefore class-grouped) file list, so it took every image from
+  the first class and `class_names` ended up with one entry. `stratified_subset` now
+  spreads the cap round-robin across classes and warns when the cap is below the class
+  count; applied to the folder, zip and ImageNet openers. The identical bug in edm2
+  was fixed in the same pass.
+- **`sh/*.sh` defaulted `TORCH_CUDA_ARCH_LIST` to 9.0 (Hopper)**, so the JIT `op`
+  build targeted the wrong SM on any other GPU. All six scripts now derive it from
+  `nvidia-smi --query-gpu=compute_cap`, falling back to 9.0 when nvidia-smi is absent
+  (a login node) and still yielding to an explicit value.
+- **combra is pinned to a tag (`@v0.9.1`) instead of tracking `main`.** Unpinned, every
   fresh env resolved whatever combra `main` was that day, so the FID / CMMD / FD-DINOv2 /
   angle numbers a run is judged on could change with no signal and no record. combra
   0.8.0 also stamps `combra/version` into this run's TensorBoard HPARAMS, so the metric

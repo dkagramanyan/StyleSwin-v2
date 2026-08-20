@@ -47,7 +47,7 @@ dependencies = [
 # Local development is unaffected -- the model envs carry an editable install of
 # combra that shadows this URL; the pin governs fresh installs (cluster, CI).
 # Bump it deliberately when you want combra's newer behaviour.
-combra = ["combra[metrics] @ git+https://github.com/dkagramanyan/combra.git@v0.8.1"]
+combra = ["combra[metrics] @ git+https://github.com/dkagramanyan/combra.git@v0.9.1"]
 # dev: lint + the CPU smoke tests (CI installs this extra).
 dev = ["ruff", "pytest"]
 

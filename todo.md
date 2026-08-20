@@ -46,10 +46,23 @@ real repo/packaging issues, not local env quirks. Env-setup notes live in
 
 ## UX
 
-- [ ] **`styleswin-prepare-data --max-images N` fills classes alphabetically**, so a small
+- [x] **`styleswin-prepare-data --max-images N` fills classes alphabetically.** Resolved
+  2026-08-20: `dataset_tool.stratified_subset` spreads the cap round-robin across
+  classes, warns when the cap is smaller than the class count, and leaves a
+  single-class source alone. Applied to the folder, zip and ImageNet openers.
+  **The same bug was in edm2** (`edm2/dataset_tool.py`) and was fixed there too.
+  `tests/test_dataset_tool.py` pins it; confirmed failing against the pre-fix code.
+
+  Original report: so a small
   cap yields images from only the first class (and `class_names` ends up with one entry).
   Consider sampling across classes, or document that `--max-images` is per-run-order.
 
-- [ ] **`sh/*.sh` hardcode `TORCH_CUDA_ARCH_LIST=9.0`** (Hopper). On other GPUs (e.g. a 3090,
+- [x] **`sh/*.sh` defaulted `TORCH_CUDA_ARCH_LIST` to 9.0** (Hopper). Resolved 2026-08-20:
+  all six scripts derive it from `nvidia-smi --query-gpu=compute_cap` (deduplicated,
+  `;`-joined for multi-GPU), falling back to 9.0 when nvidia-smi is absent — e.g. on a
+  login node. An explicit `TORCH_CUDA_ARCH_LIST` still wins. Verified all three paths on
+  a 3090: derives `8.6`, falls back to `9.0` with nvidia-smi off `PATH`, honours `7.5`.
+
+  Original report: On other GPUs (e.g. a 3090,
   `sm_86`) the JIT `op` build targets the wrong SM unless the caller overrides it. Consider
   deriving the arch from the detected device, or documenting the override.

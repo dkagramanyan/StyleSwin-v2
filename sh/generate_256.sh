@@ -10,6 +10,10 @@ conda activate styleswin-v2
 
 command -v module >/dev/null 2>&1 && module load CUDA/13.1 || true
 export CUDA_HOME="$(dirname "$(dirname "$(command -v nvcc)")")"
+# TORCH_CUDA_ARCH_LIST: build the JIT `op/` extensions for the GPUs actually present
+# (a 3090 is sm_86, not the sm_90 this used to assume); falls back to Hopper when
+# nvidia-smi is unavailable, e.g. on a login node. An explicit value always wins.
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd';' -)}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-9.0}"
 
 : "${NETWORK:?set NETWORK=path/to/network-snapshot-<kimg>-inference.pt}"

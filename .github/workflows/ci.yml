@@ -33,4 +33,19 @@ jobs:
       # CPU-only smoke tests: torch is not installed here, so the tests that need
       # it self-skip. The dataset-tool and RankH5 tests run on the base deps.
       - run: pip install -e ".[dev]"
+      # combra is a private repo. When a read-access token is configured as the
+      # COMBRA_TOKEN secret, install it and set COMBRA_REQUIRED so an absent combra
+      # becomes a test FAILURE rather than a skip; without the secret the contract
+      # test still skips, so a fork's PR keeps building. Base `combra` is enough:
+      # CI never runs the image metrics, so the [metrics] extra is not needed here.
+      - name: Install combra (arms tests/test_combra_contract.py)
+        env:
+          COMBRA_TOKEN: ${{ secrets.COMBRA_TOKEN }}
+        run: |
+          if [ -n "$COMBRA_TOKEN" ]; then
+            pip install "combra @ git+https://x-access-token:${COMBRA_TOKEN}@github.com/dkagramanyan/combra.git"
+            echo "COMBRA_REQUIRED=1" >> "$GITHUB_ENV"
+          else
+            echo "COMBRA_TOKEN not set -- the combra contract test will skip."
+          fi
       - run: pytest -q

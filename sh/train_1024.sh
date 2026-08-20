@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 while [[ ! -f pyproject.toml && "$PWD" != / ]]; do cd ..; done
 
-conda activate styleswin
+conda activate styleswin-v2
 
 # System CUDA toolkit provides nvcc to JIT-build op/; derive CUDA_HOME from it. TORCH_CUDA_ARCH_LIST
 # defaults to Hopper (sm_90); override for other GPUs.

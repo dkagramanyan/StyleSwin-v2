@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 while [[ ! -f pyproject.toml && "$PWD" != / ]]; do cd ..; done
 
-conda activate styleswin
+conda activate styleswin-v2
 
 command -v module >/dev/null 2>&1 && module load CUDA/13.1 || true
 export CUDA_HOME="$(dirname "$(dirname "$(command -v nvcc)")")"

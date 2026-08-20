@@ -6,6 +6,17 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 ## [Unreleased]
 
 ### Fixed
+- **3 of the 5 console scripts were unusable outside the repo root.** `pyproject.toml`
+  declared the five `py-modules` but had no `[tool.setuptools.packages.find]`, so the
+  sibling package dirs the scripts import were never installed: `styleswin-train` died
+  on `No module named 'dnnlib'`, `styleswin-eval` and `styleswin-gen-images` on
+  `No module named 'models'`. The `sh/*.sh` launchers do not set `PYTHONPATH`, so they
+  hit it too. The find block now mirrors san-v2 and edm2.
+- **Console scripts are now covered by a packaging test** (`tests/test_entry_points.py`).
+  It launches every entry point declared in `[project.scripts]` with `--help` from a
+  temp cwd, which is the only way to see this class of bug: pytest runs with the repo
+  root on `sys.path`, so an in-repo test passes while the installed script is broken.
+  Confirmed to fail against the pre-fix packaging before being kept.
 - **`stats.jsonl` rows are built by a testable function**, and a new
   `tests/test_stats_contract.py` feeds a real row to `combra.metrics.load_fid_by_kimg`.
   The reader was only ever tested against a synthetic flat row, so nothing checked the

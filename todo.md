@@ -16,7 +16,12 @@ real repo/packaging issues, not local env quirks. Env-setup notes live in
   Fix: drop the redundant `% 256` (`arange(48)` never exceeds 255), or use a fitting dtype.
   Pin `numpy<2` in `pyproject.toml` as a stopgap.
 
-- [ ] **Console scripts fail standalone: `No module named 'dnnlib'`.** The editable install
+- [x] **Console scripts fail standalone: `No module named 'dnnlib'`.** Resolved
+  2026-08-20: `pyproject.toml` gained a `[tool.setuptools.packages.find]` block, and
+  `tests/test_entry_points.py` launches every entry point from a temp cwd so it cannot
+  regress silently.
+
+  Original report: The editable install
   maps only the 5 `py-modules` (`train`, `gen_images`, …); the sibling package dirs
   (`dnnlib`, `op`, `models`, `training`, `dataset`, `torch_utils`, `utils`) are not exposed,
   so `styleswin-train` etc. fail on `import dnnlib` unless the repo root is on `PYTHONPATH`.

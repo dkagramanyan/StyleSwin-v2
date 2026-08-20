@@ -66,6 +66,14 @@ styleswin-download-models = "download_models:main"
 [tool.setuptools]
 py-modules = ["train", "gen_images", "eval", "dataset_tool", "download_models"]
 
+# The console scripts above import these sibling package dirs. Without this block
+# only the five py-modules are installed, so `styleswin-train` died on
+# `No module named 'dnnlib'` and `styleswin-eval` / `styleswin-gen-images` on
+# `No module named 'models'` from any cwd but the repo root -- which the sh/*.sh
+# launchers do not guarantee. Mirrors the same block in san-v2 and edm2.
+[tool.setuptools.packages.find]
+include = ["dnnlib*", "models*", "op*", "training*", "torch_utils*", "utils*", "dataset*"]
+
 [tool.ruff]
 line-length = 120
 

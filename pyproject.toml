@@ -41,7 +41,13 @@ dependencies = [
 # bare `combra` install has no FID / CMMD / FD-DINOv2 backend and those three
 # metrics come back nan. combra also floors Python at 3.12, which is why this
 # package does too.
-combra = ["combra[metrics] @ git+https://github.com/dkagramanyan/combra.git"]
+# Pinned to a combra tag, not a moving branch. Unpinned, every fresh env
+# resolved whatever combra main was that day, so the FID / CMMD / FD-DINOv2 /
+# angle numbers a run is judged on could change with no signal and no record.
+# Local development is unaffected -- the model envs carry an editable install of
+# combra that shadows this URL; the pin governs fresh installs (cluster, CI).
+# Bump it deliberately when you want combra's newer behaviour.
+combra = ["combra[metrics] @ git+https://github.com/dkagramanyan/combra.git@v0.8.1"]
 # dev: lint + the CPU smoke tests (CI installs this extra).
 dev = ["ruff", "pytest"]
 

@@ -10,6 +10,24 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
   needed; the fixes are described in this changelog instead.
 
 ### Fixed
+- **`Timing/eval_sec` was reported on rank 0 only, desyncing the stats reduction.**
+  `training_stats.report0` registers the counter *name* on whichever rank calls it —
+  it discards non-zero ranks' values, not the registration — and `Collector.update()`
+  all-reduces over the registered set, which the module's own docstring says must
+  match across processes. The call sat inside `if rank == 0 and combra_results is not
+  None`, so rank 0 carried a name no other rank had and the reduction disagreed on
+  shape from the first snapshot tick of any multi-GPU run. It is now called by every
+  rank, outside the guard.
+
+- **Loading the reference slice happened before combra's rank handshake.** A decode
+  error or `MemoryError` while stacking this rank's images raised outside
+  `precompute_reference`, stranding every other rank in the precompute's `all_reduce`.
+  The stack is now guarded and agreed through `all_ranks_ok` before any collective.
+
+- **Eval failures printed on rank 0 only, hiding the rank that actually failed.** The
+  common case is a non-zero rank OOMing, which produced a run reporting a failure with
+  no error attached. Every rank now prints, tagged with its rank.
+
 - **The merge trusted a `missing_count` attr that a crashed writer never stamps.**
   `merge_shards` read the attr with a default of 0, so a shard whose process died
   before `close()` — the one case the gate exists for — sailed through, and the

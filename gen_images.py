@@ -153,7 +153,8 @@ def _generate_worker(rank, num_gpus, network, outdir, trunc, seed, classes,
         for cl, _j in my_items:
             plan[cl] = plan.get(cl, 0) + 1
         writer = RankH5Writer(os.path.join(outdir, 'shards', f'rank_{rank:03d}.h5'),
-                              plan, resolution, class_names)
+                              plan, resolution, class_names,
+                              samples_per_class if n_classes > 0 else samples)
 
     for start in range(0, len(my_items), batch_gpu):
         chunk = my_items[start:start + batch_gpu]
@@ -171,7 +172,8 @@ def _generate_worker(rank, num_gpus, network, outdir, trunc, seed, classes,
             # Group this (possibly class-straddling) chunk by class before writing.
             for cl in sorted(set(c for c, _j in chunk)):
                 sel = [k for k, (cc, _j) in enumerate(chunk) if cc == cl]
-                writer.write(cl, img_u8[sel], [gseeds[k] for k in sel])
+                writer.write(cl, img_u8[sel], [gseeds[k] for k in sel],
+                             [chunk[k][1] for k in sel])
         else:
             for k, (cl, j) in enumerate(chunk):
                 d = os.path.join(outdir, f'class_{cl}')

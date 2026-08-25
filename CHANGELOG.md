@@ -10,6 +10,19 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
   needed; the fixes are described in this changelog instead.
 
 ### Fixed
+- **The merge trusted a `missing_count` attr that a crashed writer never stamps.**
+  `merge_shards` read the attr with a default of 0, so a shard whose process died
+  before `close()` — the one case the gate exists for — sailed through, and the
+  merged `written` mask is synthesized all-True on top. An absent attr now refuses
+  the merge outright, and every shard group's actual `written` mask is verified
+  during the read, so the attr can no longer outrank the data.
+- **The merged h5's row order depended on `--gpus`.** `merge_shards` concatenated each
+  class's rows in shard-path order (rank-grouped), so the same command produced a
+  differently-ordered `<desc>.h5` at every world size. Shards now carry a per-row
+  `indices` dataset (the sample's global index within its class, threaded through from
+  `gen_images`' strided split) and the merge sorts each class by it (stable argsort,
+  `indices` dropped from the merged file) — the merged file is now byte-identical
+  regardless of `--gpus`. Same pattern as edm2's `training/h5_writer.py`.
 - **`styleswin-prepare-data --max-images N` filled classes alphabetically.** A cap
   truncated a sorted (therefore class-grouped) file list, so it took every image from
   the first class and `class_names` ended up with one entry. `stratified_subset` now
@@ -46,6 +59,15 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
   nothing checked. See below for this repo's share.
 
 ### Changed
+- **Generated-h5 metadata parity with san-v2 / DiffiT-v2** (`utils/rank_h5.py`): the
+  shard and merged roots now stamp `image_shape_hwc` and `samples_per_class`, and every
+  `class_<c>` group stamps `class_idx`, `samples_per_class` and `image_shape_hwc` —
+  the exact attribute names the sibling repos write.
+- **`class_names` is mandatory** in `RankH5Writer` and `merge_shards`: a missing or
+  too-short name list raises `ValueError` instead of silently degrading to an empty
+  `class_names` attribute / `str(c)` group names. Unconditional checkpoints still work:
+  `gen_images` derives a single-entry list for pseudo-class 0 from the checkpoint
+  metadata (falling back to `['0']` when the checkpoint predates `class_names`).
 - **The sharded eval harness moved into combra** (`combra.metrics.distributed`). This
   repo kept only what is model-specific: producing a shard of generated images and the
   float->uint8 denormalisation. The four private copies had drifted three ways --

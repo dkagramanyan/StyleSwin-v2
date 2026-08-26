@@ -31,7 +31,7 @@ import torch
 from torch.nn import functional as F
 
 from models.generator import Generator
-from utils.rank_h5 import RankH5Writer, merge_shards
+from utils.rank_h5 import RankH5Writer, merge_shards, resolve_checkpoint_class_names
 
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -79,10 +79,12 @@ def _load_checkpoint(network):
     ckpt = torch.load(network, map_location=lambda s, loc: s)
     n_classes = int(ckpt.get('n_classes', 0))
     resolution = int(ckpt.get('resolution', ckpt.get('size')))
-    class_names = ckpt.get('class_names') or [str(i) for i in range(max(n_classes, 1))]
+    # Conditional checkpoints must carry real class names (§5); fabricating '0','1',...
+    # here used to make the writer's mandatory-class_names raise unreachable.
+    class_names = resolve_checkpoint_class_names(ckpt.get('class_names'), n_classes, network)
     arch = dict(_ARCH_DEFAULTS)
     arch.update(ckpt.get('arch', {}))
-    return ckpt, n_classes, resolution, list(class_names), arch
+    return ckpt, n_classes, resolution, class_names, arch
 
 
 def _build_generator(ckpt, n_classes, resolution, arch, device):

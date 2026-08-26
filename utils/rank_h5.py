@@ -42,6 +42,24 @@ def _check_class_names(class_names, classes):
                 f"class_names has {len(class_names)} entries; missing a name for class {c}")
 
 
+def resolve_checkpoint_class_names(class_names, n_classes, source):
+    """Class names a checkpoint's outputs are stamped with (the §5 label contract).
+
+    A conditional checkpoint (``n_classes > 0``) must carry real grain-class names —
+    fabricating ``['0', '1', ...]`` would defeat downstream name-based matching, so it
+    raises instead. An unconditional checkpoint has one anonymous pseudo-class and gets
+    the single-entry ``['0']``.
+    """
+    if class_names:
+        return list(class_names)
+    if n_classes > 0:
+        raise ValueError(
+            f"checkpoint {source!r} carries no class_names metadata; refusing to fabricate "
+            "numeric names for a conditional model (label contract, §5). Re-export the "
+            "snapshot with class_names.")
+    return ["0"]
+
+
 class RankH5Writer:
     """Preallocated per-rank shard writer.
 

@@ -9,7 +9,13 @@ import h5py
 import numpy as np
 import pytest
 
-from utils.rank_h5 import H5_FORMAT, H5_SCHEMA_VERSION, RankH5Writer, merge_shards
+from utils.rank_h5 import (
+    H5_FORMAT,
+    H5_SCHEMA_VERSION,
+    RankH5Writer,
+    merge_shards,
+    resolve_checkpoint_class_names,
+)
 
 CLASS_NAMES = ['Ultra_Co11', 'Ultra_Co25', 'Ultra_Co6_2']
 RES = 8
@@ -131,3 +137,15 @@ def test_missing_class_names_raises(tmp_path):
     assert _write_shard(str(sh), 0, {0: 1}) == 0
     with pytest.raises(ValueError, match='class_names'):
         merge_shards(str(sh), str(tmp_path / 'merged.h5'), None)
+
+
+def test_conditional_checkpoint_without_names_is_refused():
+    # A conditional checkpoint with no class_names must raise, never fabricate
+    # '0','1',... — the fallback made the writer's mandatory raise unreachable.
+    with pytest.raises(ValueError, match='no class_names'):
+        resolve_checkpoint_class_names(None, 3, 'ckpt.pt')
+    with pytest.raises(ValueError, match='no class_names'):
+        resolve_checkpoint_class_names([], 3, 'ckpt.pt')
+    # Unconditional keeps the single-entry pseudo-class; real names pass through.
+    assert resolve_checkpoint_class_names(None, 0, 'ckpt.pt') == ['0']
+    assert resolve_checkpoint_class_names(CLASS_NAMES, 3, 'ckpt.pt') == CLASS_NAMES

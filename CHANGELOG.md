@@ -5,6 +5,18 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+### Fixed
+- **A conditional checkpoint with no `class_names` is refused instead of getting
+  fabricated numeric names.** `gen_images._load_checkpoint` fell back to
+  `['0', '1', ...]` whenever the checkpoint carried no (or an empty) `class_names`
+  list, which made the writer's mandatory-`class_names` `ValueError` unreachable
+  from the CLI and stamped fabricated names into the h5 — defeating downstream
+  name-based class matching (label contract, §5) at scoring time instead of
+  failing before generation. The policy now lives in
+  `utils.rank_h5.resolve_checkpoint_class_names`: real names pass through,
+  a conditional checkpoint without them raises, and an unconditional checkpoint
+  keeps the single-entry `['0']` pseudo-class.
+
 ### Removed
 - **`todo.md`.** Every item in it was closed, so the file said nothing a reader
   needed; the fixes are described in this changelog instead.

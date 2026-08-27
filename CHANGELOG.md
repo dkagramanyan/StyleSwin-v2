@@ -5,6 +5,12 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+### Removed
+- **Dead upstream utilities**: `utils/fid_score.py` and `utils/inception.py` (the
+  pytorch-fid port, superseded by combra's `fid_features`), `utils/visualizer.py`,
+  `utils/distributed.py`, and `torch_utils.misc.get_ckpt_path` (which still named
+  `network-snapshot.pkl`). Nothing imported any of them.
+
 ## [0.4.0] - 2026-08-27
 
 ### Fixed

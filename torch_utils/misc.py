@@ -285,11 +285,3 @@ def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
     print()
     return outputs
 
-#----------------------------------------------------------------------------
-
-# Added by Katja
-import os
-
-
-def get_ckpt_path(run_dir):
-    return os.path.join(run_dir, 'network-snapshot.pkl')

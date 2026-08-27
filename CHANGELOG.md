@@ -6,6 +6,15 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 ## [Unreleased]
 
 ### Changed
+- **Launch-script defaults target the production allocation.** 2x H200
+  (`TORCH_CUDA_ARCH_LIST=9.0`, `--gpus 2`, `CUDA_VISIBLE_DEVICES` defaulted only off
+  SLURM) and 8 CPUs (`--cpus-per-task=8` on the `sbatch` line, `--workers 3` per
+  rank, `OMP_NUM_THREADS=4`); a fixed `--seed 42` for both training and generation
+  with `PYTHONHASHSEED=0`; `--snapshot-keep-last 1`, so only the final snapshot —
+  the one generation loads — is kept on disk; and the full runtime environment
+  stated explicitly (`HF_HOME` / `TORCH_HOME` caches, `CUDA_DEVICE_ORDER`,
+  `TORCH_NCCL_ASYNC_ERROR_HANDLING=1`, `NCCL_DEBUG=WARN`, `PYTHONUNBUFFERED=1`).
+  Every value remains an env-var override; no Python changed.
 - **`sh/train_{256,512,1024}.sh` and `sh/generate_{256,512,1024}.sh` rewritten to
   the §9 launch-script shape shared by all four model repos.** SLURM-spool-safe
   repo-root discovery, `conda.sh` sourced before `conda activate` (a bare

@@ -5,6 +5,18 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+### Changed
+- **`sh/train_{256,512,1024}.sh` and `sh/generate_{256,512,1024}.sh` rewritten to
+  the §9 launch-script shape shared by all four model repos.** SLURM-spool-safe
+  repo-root discovery, `conda.sh` sourced before `conda activate` (a bare
+  `conda activate` fails in a non-interactive job shell), the system-CUDA JIT
+  toolchain with the module name overridable via `CUDA_MODULE`, the offline-hub
+  contract, and one console-command call whose every knob is an env var with a
+  default (`DATA`, `OUTDIR`, `GPUS`, `BATCH_GPU`, `NETWORK`, `CLASSES`,
+  `SAMPLES_PER_CLASS`, `SEED`, …) plus `"$@"` passthrough. The dataset default is
+  the shared `imagenet_9to4_1024x1024_<res>x<res>.zip` name; the per-resolution
+  preset's `batch_gpu` applies unless `BATCH_GPU` is set.
+
 ### Removed
 - **Dead upstream utilities**: `utils/fid_score.py` and `utils/inception.py` (the
   pytorch-fid port, superseded by combra's `fid_features`), `utils/visualizer.py`,

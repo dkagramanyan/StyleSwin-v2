@@ -5,6 +5,8 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-27
+
 ### Fixed
 - **Snapshots are named `styleswin-snapshot-<kimg:06d>-inference.pt`** (was
   `network-snapshot-…`), matching the `<model>-snapshot-…` pattern of the other

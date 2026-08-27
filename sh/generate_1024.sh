@@ -16,7 +16,7 @@ export CUDA_HOME="$(dirname "$(dirname "$(command -v nvcc)")")"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd';' -)}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-9.0}"
 
-: "${NETWORK:?set NETWORK=path/to/network-snapshot-<kimg>-inference.pt}"
+: "${NETWORK:?set NETWORK=path/to/styleswin-snapshot-<kimg>-inference.pt}"
 
 styleswin-gen-images \
     --network="${NETWORK}" \

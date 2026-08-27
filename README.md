@@ -87,7 +87,7 @@ bash sh/train_256.sh                                                 # same scri
 
 Each run writes to `runs/.../NNNNN-<cfg>-gpus<G>-batch<B>[-desc]/` with `<runname>.log`,
 `stats.jsonl`, TensorBoard events, `reals.png` / `fakes<kimg>.png` grids, and — the single
-checkpoint kind — `network-snapshot-<kimg>-inference.pt` (EMA-only weights + self-describing
+checkpoint kind — `styleswin-snapshot-<kimg>-inference.pt` (EMA-only weights + self-describing
 metadata), written atomically every snapshot tick and always at the last tick, pruned to
 `--snapshot-keep-last`. There is **no resume**: size `--kimg` (or split stages) to fit the job's
 time limit. Pick the best snapshot post-hoc from `stats.jsonl` (`Metrics/combra_fid`).
@@ -107,7 +107,7 @@ standalone. combra is optional; if missing, training warns at startup and contin
 ## Generation
 
 ```bash
-styleswin-gen-images --network=./runs/.../network-snapshot-000500-inference.pt \
+styleswin-gen-images --network=./runs/.../styleswin-snapshot-000500-inference.pt \
     --outdir=./generated --save-mode hdf5 \
     --classes Ultra_Co11,Ultra_Co25,Ultra_Co6_2 --samples-per-class 1000 \
     --trunc 0.7 --gpus 2 --batch-gpu 32

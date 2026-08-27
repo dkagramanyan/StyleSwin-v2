@@ -60,7 +60,7 @@ cmd_smoke(){
   styleswin-train --outdir="$WORK/runs" --cfg styleswin-256 --data="$WORK/smoke_256.zip" \
       --gpus 1 --cond True --combra-metrics False --batch-gpu 4 \
       --kimg 1 --tick 1 --snap 1 --workers 1
-  CKPT="$(ls "$WORK"/runs/*/network-snapshot-000001-inference.pt)"
+  CKPT="$(ls "$WORK"/runs/*/styleswin-snapshot-000001-inference.pt)"
   echo "checkpoint: $CKPT"
   ls "$(dirname "$CKPT")"
 
@@ -75,7 +75,7 @@ cmd_smoke(){
   say "verify"
   python -c "
 import h5py
-f=h5py.File('$WORK/generated/network-snapshot-000001-inference.h5','r')
+f=h5py.File('$WORK/generated/styleswin-snapshot-000001-inference.h5','r')
 assert f.attrs['missing_count']==0, 'incomplete shards'
 for c in ('class_0','class_1','class_2'):
     assert f[c+'/images'].shape==(6,256,256,3), f[c].name

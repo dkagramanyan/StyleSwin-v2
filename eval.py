@@ -8,7 +8,7 @@ metrics used during training (angle-density + fid / cmmd / fd_dinov2), reusing t
 loop's helpers on the single-process path. Prints the metrics and, with ``--out``, writes
 them as JSON.
 
-    styleswin-eval --network run/network-snapshot-000500-inference.pt \\
+    styleswin-eval --network run/styleswin-snapshot-000500-inference.pt \\
         --data datasets/imagenet_9to4_256x256.zip --num-fid-samples 10000
 """
 

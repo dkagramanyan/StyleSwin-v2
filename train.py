@@ -131,6 +131,11 @@ def _dataset_info(data_path, lmdb, size, cond):
         raise click.ClickException(f'--data: {err}')
     n_classes = ds.label_dim if (cond and ds.has_labels) else 0
     class_names = ds.class_names if (cond and ds.has_labels) else None
+    if n_classes > 0 and not class_names:
+        raise click.ClickException(
+            f'--data: {data_path} carries no class_names in dataset.json; a conditional run '
+            'would write checkpoints with no grain-class identity (label contract, §5). '
+            'Rebuild the zip with styleswin-prepare-data.')
     return ds.resolution, n_classes, class_names, ds.name
 
 #----------------------------------------------------------------------------

@@ -22,7 +22,7 @@ an **RTX 3090 (24 GB)** with the `styleswin` conda env.
 ```
 
 `smoke` ends with `PASS.` and prints the sample grid + generated-PNG paths. Artifacts land
-in `$WORK` (default `/tmp/styleswin_smoke/`): `runs/*/network-snapshot-000001-inference.pt`
+in `$WORK` (default `/tmp/styleswin_smoke/`): `runs/*/styleswin-snapshot-000001-inference.pt`
 (+ `fakes000001.png`, `stats.jsonl`), `generated/*.h5`, `generated_dir/class_*/*.png`.
 
 Override via env vars (see the header of `driver.sh`): `ENVNAME`, `SRC` (image source dir

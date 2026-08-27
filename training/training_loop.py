@@ -9,7 +9,7 @@ machinery follows the cross-model contract:
 
 * progress in **kimg/ticks**, the san-v2 status line, rank-0 ``stats.jsonl`` + TensorBoard;
 * the **checkpoint contract (§3)**: exactly one artifact kind --
-  ``network-snapshot-<kimg:06d>-inference.pt`` (EMA-only weights + self-describing
+  ``styleswin-snapshot-<kimg:06d>-inference.pt`` (EMA-only weights + self-describing
   metadata), written atomically every snapshot tick **and always at the last tick**,
   history pruned to ``--snapshot-keep-last``. No resume, no rolling ``latest``, no
   ``best_model.*``;
@@ -316,8 +316,9 @@ def training_loop(
     scaler = torch.cuda.amp.GradScaler(enabled=(precision == 'fp16'))
     _assert_norm_roundtrip(device)
 
-    if class_names is None:
-        class_names = [str(i) for i in range(max(n_classes, 1))]
+    # class_names is stored as the dataset reports it (None when the zip predates the
+    # label contract): a conditional run without names is refused by the launcher,
+    # never given fabricated '0','1',... that downstream code cannot tell from real ones.
     arch = dict(style_dim=style_dim, n_mlp=n_mlp, channel_multiplier=g_channel_multiplier,
                 lr_mlp=lr_mlp, enable_full_resolution=enable_full_resolution)
 
@@ -652,10 +653,10 @@ def training_loop(
                     'class_names': class_names, 'cur_nimg': cur_nimg, 'arch': arch,
                 }
                 _atomic_save(snapshot_data,
-                             os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}-inference.pt'),
+                             os.path.join(run_dir, f'styleswin-snapshot-{cur_nimg//1000:06d}-inference.pt'),
                              run_dir)
                 if snapshot_keep_last > 0:
-                    old_snaps = sorted(glob.glob(os.path.join(run_dir, 'network-snapshot-*-inference.pt')))
+                    old_snaps = sorted(glob.glob(os.path.join(run_dir, 'styleswin-snapshot-*-inference.pt')))
                     for old in old_snaps[:-snapshot_keep_last]:
                         os.remove(old)
 

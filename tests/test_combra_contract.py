@@ -18,17 +18,21 @@ import os
 
 import pytest
 
-# Every name this repo imports from combra, in one place. Adding a combra call
-# anywhere in the repo means adding its name here.
+# Every (module, name) this repo imports from combra, in one place. Adding a
+# combra call anywhere in the repo means adding its name here. The training loop
+# reaches the feature / angle / Gaussian-fit functions only through
+# combra.metrics.distributed, so those four symbols are the load-bearing ones.
 REQUIRED = [
-    "angle_density_metrics_from_pooled",
-    "cmmd_features",
-    "cmmd_from_features",
-    "fd_dinov2_features",
-    "fid_features",
-    "frechet_from_features",
-    "images_to_pooled_angles",
-    "self_test",
+    ("combra.metrics.distributed", "all_ranks_ok"),
+    ("combra.metrics.distributed", "distributed_metrics"),
+    ("combra.metrics.distributed", "gather_generated"),
+    ("combra.metrics.distributed", "precompute_reference"),
+    ("combra.metrics", "self_test"),
+    ("combra.io", "write_hparams"),
+    # download_models.py (backbone prefetch)
+    ("combra.metrics", "cmmd_features"),
+    ("combra.metrics", "fd_dinov2_features"),
+    ("combra.metrics", "fid_features"),
 ]
 
 combra_installed = importlib.util.find_spec("combra") is not None
@@ -45,26 +49,26 @@ def test_combra_is_installed_when_required():
 
 
 @requires_combra
-@pytest.mark.parametrize("name", REQUIRED)
-def test_combra_exports_symbol(name):
-    import combra.metrics
+@pytest.mark.parametrize("module, name", REQUIRED)
+def test_combra_exports_symbol(module, name):
+    mod = importlib.import_module(module)
 
-    assert hasattr(combra.metrics, name), (
-        f"combra.metrics.{name} is missing. This repo's eval path imports it; without it "
-        "every combra metric silently disappears. Check combra's CHANGELOG for a rename."
+    assert hasattr(mod, name), (
+        f"{module}.{name} is missing. This repo imports it; without it the combra "
+        "metrics silently disappear. Check combra's CHANGELOG for a rename."
     )
 
 
 @requires_combra
 def test_combra_import_block_resolves():
-    # The exact import the training loop performs. Guarded there, unguarded here.
-    from combra.metrics import (  # noqa: F401
-        angle_density_metrics_from_pooled,
-        cmmd_features,
-        cmmd_from_features,
-        fd_dinov2_features,
-        fid_features,
-        frechet_from_features,
+    # The exact imports the training loop performs. Guarded there, unguarded here.
+    from combra.io import write_hparams  # noqa: F401
+    from combra.metrics import self_test  # noqa: F401
+    from combra.metrics.distributed import (  # noqa: F401
+        all_ranks_ok,
+        distributed_metrics,
+        gather_generated,
+        precompute_reference,
     )
 
 

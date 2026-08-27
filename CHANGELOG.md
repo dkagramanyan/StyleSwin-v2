@@ -6,6 +6,30 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 ## [Unreleased]
 
 ### Fixed
+- **Snapshots are named `styleswin-snapshot-<kimg:06d>-inference.pt`** (was
+  `network-snapshot-…`), matching the `<model>-snapshot-…` pattern of the other
+  three repos and this repo's own `gen_images` docstring. The prune glob, README,
+  `eval.py`, `sh/generate_*.sh` and the run skill follow. Old `network-snapshot-*`
+  files still load (the loader takes a path) but are no longer pruned by new runs.
+
+- **The training loop fabricated `['0', '1', …]` class names into checkpoints**
+  when the dataset zip carried none, so a conditional run produced snapshots whose
+  fabricated names downstream code could not tell from real ones — one stage
+  upstream of the `gen_images` fallback removed earlier. The loop now stores what
+  `dataset.json` reports and the launcher refuses a conditional run whose zip has
+  no `class_names` (rebuild it with `styleswin-prepare-data`); unconditional runs
+  store `None`, which `gen_images` maps to the single `['0']` pseudo-class.
+
+- **`tests/test_combra_contract.py` asserted combra symbols the training loop no
+  longer imports.** Its `REQUIRED` list still named the eight feature / angle
+  functions from before the sharded harness moved into combra, and never named
+  `combra.metrics.distributed`'s `all_ranks_ok` / `distributed_metrics` /
+  `gather_generated` / `precompute_reference` — the four symbols the loop actually
+  depends on. That is the exact blind spot the test exists to close (combra 0.5.0
+  removing three functions hid for a release the same way). It now pins
+  `(module, name)` pairs for every combra import in the repo and the unguarded
+  import block mirrors the loop's real imports.
+
 - **A conditional checkpoint with no `class_names` is refused instead of getting
   fabricated numeric names.** `gen_images._load_checkpoint` fell back to
   `['0', '1', ...]` whenever the checkpoint carried no (or an empty) `class_names`
@@ -17,11 +41,6 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
   a conditional checkpoint without them raises, and an unconditional checkpoint
   keeps the single-entry `['0']` pseudo-class.
 
-### Removed
-- **`todo.md`.** Every item in it was closed, so the file said nothing a reader
-  needed; the fixes are described in this changelog instead.
-
-### Fixed
 - **`Timing/eval_sec` was reported on rank 0 only, desyncing the stats reduction.**
   `training_stats.report0` registers the counter *name* on whichever rank calls it —
   it discards non-zero ranks' values, not the registration — and `Collector.update()`
@@ -87,6 +106,10 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 - **The §7 logging contract is now asserted** (`tests/test_logging_contract.py`).
   Thirteen scalar keys had drifted across the four repos; nothing failed because
   nothing checked. See below for this repo's share.
+
+### Removed
+- **`todo.md`.** Every item in it was closed, so the file said nothing a reader
+  needed; the fixes are described in this changelog instead.
 
 ### Changed
 - **Generated-h5 metadata parity with san-v2 / DiffiT-v2** (`utils/rank_h5.py`): the

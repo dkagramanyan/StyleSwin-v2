@@ -93,5 +93,5 @@ def test_angle_metrics_run_on_pooled_angles():
     out = angle_density_metrics_from_pooled(
         angles(100, 20, 240, 25), angles(104, 21, 236, 26)
     )
-    for key in ("w1", "w2", "circular_w1", "circular_w2", "mu1", "sigma1", "amp1"):
+    for key in ("w1", "w2", "circular_w1", "circular_w2", "mu1", "sigma1", "share1"):
         assert np.isfinite(out[key]), f"{key} is not finite"

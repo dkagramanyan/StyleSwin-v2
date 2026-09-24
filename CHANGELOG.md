@@ -6,6 +6,12 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 ## [Unreleased]
 
 ### Changed
+- **combra pin `v0.13.0` → `v0.15.1`.** The code and tests already expected the
+  0.14.0 metric key `pi` (in place of `share1`/`share2`), but a fresh
+  `pip install -e '.[combra]'` still resolved 0.13.0 and logged the old keys. 0.15.x
+  also measures vertex angles with combra's current P6 method, so in-training angle
+  metrics now match the wc_cv analysis. The `combra.metrics.distributed` API the loop
+  calls is unchanged.
 - **Launch-script defaults target the production allocation.** 2x H200
   (`TORCH_CUDA_ARCH_LIST=9.0`, `--gpus 2`, `CUDA_VISIBLE_DEVICES` defaulted only off
   SLURM) and 8 CPUs (`--cpus-per-task=8` on the `sbatch` line, `--workers 3` per

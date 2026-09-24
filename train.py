@@ -24,6 +24,7 @@ Example (single stage, conditional, 2 GPUs):
 import json
 import os
 import re
+import sys
 import tempfile
 
 import click
@@ -54,12 +55,33 @@ RESOLUTION_CONFIGS = {
 
 #----------------------------------------------------------------------------
 
+def _print_options(c):
+    print()
+    print('Training options:')
+    print(json.dumps(c, indent=2))
+    print()
+    print(f'Output directory:    {c.run_dir}')
+    print(f'Number of GPUs:      {c.num_gpus}')
+    print(f'Batch size:          {c.loop.batch_gpu * c.num_gpus * c.loop.grad_accum} images')
+    print(f'Training duration:   {c.loop.total_kimg} kimg')
+    print(f'Dataset path:        {c.loop.data_path}')
+    print(f'Dataset resolution:  {c.loop.resolution}')
+    print(f'Num classes:         {c.loop.n_classes}')
+    print()
+
+#----------------------------------------------------------------------------
+
 def subprocess_fn(rank, c, temp_dir):
     # Rank-0-only run log, named after the run directory (§7). Other ranks stay on stdout;
     # under SLURM their output lands in slurm-<jobid>.out.
     if rank == 0:
+        # With --gpus=1 this runs in-process under the launcher's console Logger; close it
+        # first, or the file Logger wraps it and every console line gets two timestamps.
+        if isinstance(sys.stdout, dnnlib.util.Logger):
+            sys.stdout.close()
         log_name = os.path.basename(c.run_dir) + '.log'
-        dnnlib.util.Logger(file_name=os.path.join(c.run_dir, log_name), file_mode='a', should_flush=True)
+        logger = dnnlib.util.Logger(file_name=os.path.join(c.run_dir, log_name), file_mode='a', should_flush=True)
+        _print_options(c)
 
     if c.num_gpus > 1:
         init_file = os.path.abspath(os.path.join(temp_dir, '.torch_distributed_init'))
@@ -72,6 +94,10 @@ def subprocess_fn(rank, c, temp_dir):
     training_stats.init_multiprocessing(rank=rank, sync_device=sync_device)
 
     training_loop.training_loop(rank=rank, num_gpus=c.num_gpus, run_dir=c.run_dir, **c.loop)
+
+    if rank == 0:
+        print('Training complete.')
+        logger.close()
 
 #----------------------------------------------------------------------------
 
@@ -88,20 +114,10 @@ def launch_training(c, desc, outdir, dry_run):
     c.run_dir = os.path.join(outdir, f'{cur_run_id:05d}-{desc}')
     assert not os.path.exists(c.run_dir)
 
-    print()
-    print('Training options:')
-    print(json.dumps(c, indent=2))
-    print()
-    print(f'Output directory:    {c.run_dir}')
-    print(f'Number of GPUs:      {c.num_gpus}')
-    print(f'Batch size:          {c.loop.batch_gpu * c.num_gpus * c.loop.grad_accum} images')
-    print(f'Training duration:   {c.loop.total_kimg} kimg')
-    print(f'Dataset path:        {c.loop.data_path}')
-    print(f'Dataset resolution:  {c.loop.resolution}')
-    print(f'Num classes:         {c.loop.n_classes}')
-    print()
-
+    # The options are printed by rank 0 once its file Logger exists, so they land in the
+    # run log (§7); a dry run has no run log and prints them here.
     if dry_run:
+        _print_options(c)
         print('Dry run; exiting.')
         return
 

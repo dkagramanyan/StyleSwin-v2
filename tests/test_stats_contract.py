@@ -41,7 +41,7 @@ def _row():
 
 def test_row_contains_only_json_scalars():
     for key, value in _row().items():
-        assert isinstance(value, (int, float, str)), (
+        assert value is None or isinstance(value, (int, float, str)), (
             f"{key} is {type(value).__name__}, not a JSON scalar -- "
             "load_fid_by_kimg will shape-filter this record away"
         )
@@ -54,3 +54,20 @@ def test_row_round_trips_through_load_fid_by_kimg(tmp_path):
     path = tmp_path / "stats.jsonl"
     path.write_text(json.dumps(_row()) + "\n")
     assert load_fid_by_kimg(str(path)) == {"000403": 12.5}
+
+
+def test_non_finite_values_are_written_as_null():
+    # A bare NaN token is not valid JSON; the row writes null, which load_fid_by_kimg skips.
+    from types import SimpleNamespace
+
+    from training.training_loop import build_stats_row
+
+    stats_dict = {
+        "Progress/kimg": SimpleNamespace(mean=403.2),
+        "Progress/tick": SimpleNamespace(mean=7.0),
+        "Loss/r1": SimpleNamespace(mean=float("nan")),
+    }
+    row = build_stats_row(stats_dict, {"combra_fid": float("inf")}, 1000.0, 900.0)
+    back = json.loads(json.dumps(row, allow_nan=False))
+    assert back["Loss/r1"] is None and back["Metrics/combra_fid"] is None
+    assert back["Progress/tick"] == 7 and isinstance(back["Progress/tick"], int)

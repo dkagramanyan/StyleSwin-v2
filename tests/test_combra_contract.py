@@ -73,6 +73,17 @@ def test_combra_import_block_resolves():
 
 
 @requires_combra
+def test_write_hparams_accepts_step():
+    # combra >= 0.15.3: step= writes the hparams into the run's own event file at the
+    # final cur_nimg, which is how the training loop calls it.
+    import inspect
+
+    from combra.io import write_hparams
+
+    assert "step" in inspect.signature(write_hparams).parameters
+
+
+@requires_combra
 def test_angle_metrics_run_on_pooled_angles():
     # Not just importable -- callable, and returning the keys the loop logs.
     import numpy as np

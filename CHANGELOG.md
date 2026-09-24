@@ -6,6 +6,23 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 ## [Unreleased]
 
 ### Changed
+- **Training logs follow the unified four-repo style (spec §7); combra pin
+  `v0.15.1` → `v0.15.3`.**
+  - One timestamp per line: the launcher's console Logger is closed before the
+    rank-0 file Logger is installed (`--gpus=1` printed `[ts] [ts]`), and the tick
+    line no longer embeds its own `[ts]` field.
+  - The `Training options:` dump is printed once, after the file Logger exists, so it
+    is in `<run>.log` (a dry run still prints it); the log ends with `Training complete.`.
+  - Tick-line field widths aligned across repos; the eval prints
+    `Evaluating combra metrics (N samples, G GPUs)...` and one
+    `Metrics: combra_fid 12.3456  ...` line with the logged keys; snapshots print
+    `Saved <file>` for the fakes png and the `.pt`.
+  - `stats.jsonl`: non-finite values are `null` (was a bare `NaN`), `Progress/tick`
+    is an int, and `Timing/eval_sec` appears only on ticks that ran an eval (the
+    collector repeated the last value on every later tick).
+  - TensorBoard: real wall time (no `walltime=` seconds-since-start), non-finite
+    scalars skipped, a `Reals` grid at step 0, grids as HWC uint8, hparams written
+    at `step=cur_nimg`, and the writer closed at the end.
 - **combra pin `v0.13.0` → `v0.15.1`.** The code and tests already expected the
   0.14.0 metric key `pi` (in place of `share1`/`share2`), but a fresh
   `pip install -e '.[combra]'` still resolved 0.13.0 and logged the old keys. 0.15.x

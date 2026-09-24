@@ -69,6 +69,12 @@ def test_event_file_is_self_identifying(source):
     assert "filename_suffix" in source
 
 
+def test_tensorboard_uses_real_walltime(source):
+    # A walltime= of seconds-since-start puts every run in 1970 on TensorBoard's
+    # relative/wall axes; without it the writer records real epoch time.
+    assert "walltime=" not in source
+
+
 def test_hyperparameters_are_recorded(source):
     # Without this the HPARAMS tab is empty and two runs can be compared by their
     # curves but not by the configuration that produced them.

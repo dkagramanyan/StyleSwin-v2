@@ -23,6 +23,7 @@ machinery follows the cross-model contract:
 import glob
 import importlib.util
 import json
+import math
 import os
 import time
 from datetime import datetime
@@ -192,7 +193,7 @@ def _combra_eval_distributed(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank, d
     return distributed_metrics(combra_ref, gen_angles, gen_feats, device=device)
 
 
-def _write_run_hparams(run_dir, writer, metrics):
+def _write_run_hparams(run_dir, writer, metrics, step):
     """Record this run's configuration in TensorBoard's HPARAMS tab (§7).
 
     The config is read back from ``training_options.json``, which the launcher has
@@ -213,7 +214,7 @@ def _write_run_hparams(run_dir, writer, metrics):
         return
     with open(path) as fh:
         config = json.load(fh)
-    write_hparams(writer, config, metrics)
+    write_hparams(writer, config, metrics, step=step)
 
 
 def build_stats_row(stats_dict, stats_metrics, timestamp, start_time):
@@ -227,12 +228,18 @@ def build_stats_row(stats_dict, stats_metrics, timestamp, start_time):
     ``value.mean``, so flattening also makes the file carry the same keys as the
     tags, which is what §7 asks for.
 
+    Non-finite values become ``None`` (JSON ``null``, which ``load_fid_by_kimg`` skips):
+    a bare ``NaN`` token is not valid JSON.
+
     Kept as a plain function so tests can exercise the real row without running a
     training loop.
     """
     row = {name: value.mean for name, value in stats_dict.items()}
+    if 'Progress/tick' in row:
+        row['Progress/tick'] = int(row['Progress/tick'])
     for name, value in stats_metrics.items():
         row[f'Metrics/{name}'] = float(value)
+    row = {k: None if isinstance(v, float) and not math.isfinite(v) else v for k, v in row.items()}
     row['timestamp'] = timestamp
     row['wall_time'] = timestamp - start_time
     row['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -250,7 +257,7 @@ def _startup_header(num_gpus):
     try:
         parts.append('device ' + torch.cuda.get_device_name(0))
     except Exception:
-        pass
+        parts.append('device cpu')
     for v in ('CUDA_VISIBLE_DEVICES', 'TORCH_CUDA_ARCH_LIST', 'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE'):
         if os.environ.get(v):
             parts.append(f'{v}={os.environ[v]}')
@@ -471,11 +478,13 @@ def training_loop(
         except ImportError as err:
             print('Skipping tfevents export:', err)
         # reals.png (once) + fakes_init.png (untrained G_ema) sample grids.
-        _save_reals_grid(reference_u8_set, grid_c, grid_ncol, n_classes, run_dir)
+        reals_grid = _save_reals_grid(reference_u8_set, grid_c, grid_ncol, n_classes, run_dir)
         init_grid = _render_fakes_grid(g_ema, grid_z, grid_c, grid_ncol, batch_gpu, n_classes, device)
         torchvision.utils.save_image(init_grid, os.path.join(run_dir, 'fakes_init.png'))
         if stats_tfevents is not None:
-            stats_tfevents.add_image('Fakes', init_grid, global_step=0)
+            if reals_grid is not None:
+                stats_tfevents.add_image('Reals', _grid_hwc_u8(reals_grid), global_step=0, dataformats='HWC')
+            stats_tfevents.add_image('Fakes', _grid_hwc_u8(init_grid), global_step=0, dataformats='HWC')
 
     # ------------------------------------------------------------------ Training loop.
     if rank == 0:
@@ -582,12 +591,11 @@ def training_loop(
 
         tick_end_time = time.time()
         fields = []
-        fields += [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]"]
         fields += [f"tick {training_stats.report0('Progress/tick', cur_tick):<5d}"]
-        fields += [f"kimg {training_stats.report0('Progress/kimg', cur_nimg / 1e3):<8.1f}"]
+        fields += [f"kimg {training_stats.report0('Progress/kimg', cur_nimg / 1e3):<9.1f}"]
         fields += [f"time {dnnlib.util.format_time(training_stats.report0('Timing/total_sec', tick_end_time - start_time)):<12s}"]
-        fields += [f"sec/tick {training_stats.report0('Timing/sec_per_tick', tick_end_time - tick_start_time):<7.1f}"]
-        fields += [f"sec/kimg {training_stats.report0('Timing/sec_per_kimg', (tick_end_time - tick_start_time) / (cur_nimg - tick_start_nimg) * 1e3):<7.2f}"]
+        fields += [f"sec/tick {training_stats.report0('Timing/sec_per_tick', tick_end_time - tick_start_time):<8.1f}"]
+        fields += [f"sec/kimg {training_stats.report0('Timing/sec_per_kimg', (tick_end_time - tick_start_time) / (cur_nimg - tick_start_nimg) * 1e3):<8.2f}"]
         fields += [f"maintenance {training_stats.report0('Timing/maintenance_sec', maintenance_time):<6.1f}"]
         fields += [f"cpumem {training_stats.report0('Resources/cpu_mem_gb', _cpu_mem_gb()):<6.2f}"]
         fields += [f"gpumem {training_stats.report0('Resources/peak_gpu_mem_gb', torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}"]
@@ -605,12 +613,14 @@ def training_loop(
         # values at a new step -- turning the metric curves into step functions and
         # letting post-hoc snapshot selection resolve to a kimg never evaluated.
         stats_metrics = {}
+        eval_ran = False
         snapshot = (done or (cur_tick > 0 and cur_tick % snap_ticks == 0))
         if snapshot:
             g_ema.eval()
 
             if combra_active:
-                stage('Evaluating combra metrics')
+                if rank == 0:
+                    print(f'Evaluating combra metrics ({num_fid_samples} samples, {num_gpus} GPUs)...', flush=True)
                 eval_start = time.time()
                 try:
                     combra_results = _combra_eval_distributed(
@@ -620,12 +630,13 @@ def training_loop(
                     # Every rank prints: the rank that fails is rarely rank 0, and a
                     # rank-0-only print left the actual error invisible while the run
                     # reported only that "combra metrics failed" somewhere.
-                    print(f'[combra][rank {rank}] metric evaluation failed: {e}', flush=True)
+                    print(('' if rank == 0 else f'[combra][rank {rank}] ') + f'combra metrics failed: {e}', flush=True)
                 # Outside the rank guard on purpose. report0 registers the counter NAME
                 # on whichever rank calls it (before it discards non-zero ranks' values),
                 # and Collector.update() all_reduces over the registered set -- so a name
                 # only rank 0 ever reported makes that reduction disagree on shape.
                 training_stats.report0('Timing/eval_sec', time.time() - eval_start)
+                eval_ran = True
                 if rank == 0 and combra_results is not None:
                     # Bare keys (combra_fid, not combra_fid10k): the old `10k` suffix
                     # was a literal that stayed 10k whatever --num-fid-samples said, so
@@ -637,14 +648,16 @@ def training_loop(
                     if 'combra_fid' in stats_metrics:
                         best_fid = min(best_fid, stats_metrics['combra_fid'])
                         stats_metrics['combra_fid_best'] = best_fid
-                    print('combra metrics: ' + ', '.join(
-                        f'{k}={v:.4f}' for k, v in combra_results.items()), flush=True)
+                    print('Metrics: ' + '  '.join(
+                        f'{k} {v:.4f}' for k, v in stats_metrics.items()), flush=True)
 
             if rank == 0:
                 grid = _render_fakes_grid(g_ema, grid_z, grid_c, grid_ncol, batch_gpu, n_classes, device)
-                torchvision.utils.save_image(grid, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'))
+                fakes_name = f'fakes{cur_nimg//1000:06d}.png'
+                torchvision.utils.save_image(grid, os.path.join(run_dir, fakes_name))
+                print(f'Saved {fakes_name}', flush=True)
                 if stats_tfevents is not None:
-                    stats_tfevents.add_image('Fakes', grid, global_step=cur_nimg)
+                    stats_tfevents.add_image('Fakes', _grid_hwc_u8(grid), global_step=cur_nimg, dataformats='HWC')
                 # The single artifact kind: EMA-only weights + self-describing metadata,
                 # written atomically, pruned to --snapshot-keep-last.
                 snapshot_data = {
@@ -652,9 +665,9 @@ def training_loop(
                     'n_classes': n_classes, 'resolution': resolution,
                     'class_names': class_names, 'cur_nimg': cur_nimg, 'arch': arch,
                 }
-                _atomic_save(snapshot_data,
-                             os.path.join(run_dir, f'styleswin-snapshot-{cur_nimg//1000:06d}-inference.pt'),
-                             run_dir)
+                snapshot_name = f'styleswin-snapshot-{cur_nimg//1000:06d}-inference.pt'
+                _atomic_save(snapshot_data, os.path.join(run_dir, snapshot_name), run_dir)
+                print(f'Saved {snapshot_name}', flush=True)
                 if snapshot_keep_last > 0:
                     old_snaps = sorted(glob.glob(os.path.join(run_dir, 'styleswin-snapshot-*-inference.pt')))
                     for old in old_snaps[:-snapshot_keep_last]:
@@ -667,17 +680,23 @@ def training_loop(
         # with no combra eval writes no combra columns rather than repeating the
         # previous tick's values at a new step.
         stats_dict = stats_collector.as_dict()
+        # The collector keeps a name's previous average on ticks that report nothing
+        # (keep_previous=True), which would repeat the last eval time on every later tick.
+        if not eval_ran:
+            stats_dict.pop('Timing/eval_sec', None)
         if stats_jsonl is not None:
             row = build_stats_row(stats_dict, stats_metrics, timestamp, start_time)
-            stats_jsonl.write(json.dumps(row) + '\n')
+            stats_jsonl.write(json.dumps(row, allow_nan=False) + '\n')
             stats_jsonl.flush()
         if stats_tfevents is not None:
             gstep = cur_nimg                          # global step = cur_nimg (§7)
-            walltime = timestamp - start_time
+            # No walltime argument: TensorBoard then records real epoch time.
             for name, value in stats_dict.items():
-                stats_tfevents.add_scalar(name, value.mean, global_step=gstep, walltime=walltime)
+                if math.isfinite(value.mean):
+                    stats_tfevents.add_scalar(name, value.mean, global_step=gstep)
             for name, value in stats_metrics.items():
-                stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=gstep, walltime=walltime)
+                if math.isfinite(value):
+                    stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=gstep)
             stats_tfevents.flush()
 
         cur_tick += 1
@@ -692,7 +711,8 @@ def training_loop(
         if stats_jsonl is not None:
             if stats_tfevents is not None:
                 _write_run_hparams(run_dir, stats_tfevents,
-                                   {'Metrics/combra_fid_best': float(best_fid)})
+                                   {'Metrics/combra_fid_best': float(best_fid)}, step=cur_nimg)
+                stats_tfevents.close()
             stats_jsonl.close()
 
 #----------------------------------------------------------------------------
@@ -761,7 +781,13 @@ def _save_reals_grid(reference_u8_set, grid_c, ncol, n_classes, run_dir):
         imgs = np.stack([reference_u8_set[i][0] for i in picks]).astype(np.float32) / 255.0
         grid = torchvision.utils.make_grid(torch.from_numpy(imgs), nrow=ncol, padding=0)
         torchvision.utils.save_image(grid, os.path.join(run_dir, 'reals.png'))
+        return grid
     except Exception as e:
         print(f'[warn] could not write reals.png: {e}', flush=True)
+
+
+def _grid_hwc_u8(grid):
+    # CHW float [0,1] grid -> HWC uint8, rounded exactly as save_image writes the png.
+    return grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
 
 #----------------------------------------------------------------------------

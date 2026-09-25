@@ -6,6 +6,12 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 ## [Unreleased]
 
 ### Changed
+- **combra pin `v0.15.3` → `v0.17.1`.** No change to training, eval, sampling or
+  checkpoints: every combra call this repo makes keeps its signature and values
+  (the test suite passes against 0.17.1). combra's plots no longer display
+  themselves, so `compare_samplers` only writes its PNG. combra 0.17 stopped
+  installing matplotlib; nothing here imports it.
+
 - **Training logs follow the unified four-repo style (spec §7); combra pin
   `v0.15.1` → `v0.15.3`.**
   - One timestamp per line: the launcher's console Logger is closed before the

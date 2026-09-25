@@ -36,10 +36,18 @@ def _help(script):
 def test_train_cli_contract():
     out = _help('train.py')
     for flag in ('--precision', '--tf32', '--bench', '--grad-accum',
-                 '--num-fid-samples', '--combra-ref-count', '--snapshot-keep-last', '--cfg'):
+                 '--num-fid-samples', '--combra-ref-count', '--snapshot-keep-last', '--cfg',
+                 '--augment'):
         assert flag in out, f'missing {flag}'
     for gone in ('--resume', '--save-inference-only', '--metrics', '--use-flip', '--mirror'):
         assert gone not in out, f'{gone} should have been removed'
+
+
+def test_augment_refused_with_lmdb(tmp_path):
+    r = subprocess.run([sys.executable, 'train.py', '--outdir', str(tmp_path), '--data', str(tmp_path),
+                        '--gpus', '1', '--batch-gpu', '1', '--lmdb', 'True', '-n'],
+                       capture_output=True, text=True)
+    assert r.returncode != 0 and '--augment' in r.stderr
 
 
 def test_gen_images_cli_contract():

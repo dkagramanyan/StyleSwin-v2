@@ -5,6 +5,34 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-25
+
+### Added
+- **`--augment` (default `True`): on-the-fly dihedral augmentation.** Each training item
+  gets a uniformly random element of the dihedral group -- rot90 by k in {0,1,2,3} and a
+  horizontal flip with p = 0.5 -- applied to the raw uint8 image in the training loader,
+  before ImageNet normalization (`DihedralAugment` in `training/training_loop.py`). The
+  draws use the per-rank torch RNG seeded from `--seed` (re-seeded per DataLoader worker),
+  so a run is reproducible. Square images only; refused with `--lmdb`. The combra
+  reference, `reals.png`, the eval labels and `styleswin-eval` never augment. bCR's
+  `CR_DiffAug` is unchanged. This brings back an augmentation option after v0.6.0 removed
+  `--mirror`.
+- Snapshots record `augment`. The combra reference is precomputed with
+  `dihedral=<augment>` in training, and `styleswin-eval` reads the flag from the snapshot
+  and passes the same value, so it reproduces the training metrics. Snapshots without the
+  key predate `--augment` (trained on the 8640-image archives with no augmentation) and
+  evaluate with `dihedral=False`.
+
+### Changed
+- **Training data: 1080 originals instead of 8640 stored orientations.** The `sh/train_*.sh`
+  defaults point at `./datasets/imagenet_9to4_orig_<r>x<r>.zip` (360 crops per class,
+  `class_names` `['Ultra_Co25', 'Ultra_Co11', 'Ultra_Co6_2']`), replacing the archives that
+  stored each crop in all 8 dihedral orientations; `--augment` now supplies those
+  orientations. One epoch is 1080 images (2 GPUs: 8 / 16 / 67 steps per epoch at
+  256 / 512 / 1024 with `drop_last`). The eval class mix follows the reference (balanced
+  360/360/360); nothing assumed 8640 images.
+- **combra pinned to v0.19.0** (`precompute_reference(..., dihedral=)`).
+
 ## [0.6.0] - 2026-09-25
 
 ### Changed

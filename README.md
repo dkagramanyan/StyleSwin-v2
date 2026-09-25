@@ -54,7 +54,7 @@ stack).
 | TF32 | not set (torch defaults: matmul TF32 off, cuDNN TF32 on) | on (`--tf32 True`) | improvement (speed) |
 | Data sampler | `DistributedSampler.set_epoch` never called: every epoch repeats the same order | `set_epoch` called each pass | improvement (bug fix) |
 | Gradient accumulation / mixed precision | none | opt-in `--grad-accum`, `--precision fp16/bf16` (defaults 1 / fp32 train as upstream) | contract |
-| Horizontal flip | opt-in `--use_flip` (LSUN Church only) | removed entirely; reals are fed as stored | improvement (deliberate) |
+| Real-image augmentation | opt-in `--use_flip` horizontal flip, used only in the LSUN Church recipe | `--augment True` (default): each training item gets a uniformly random dihedral transform (rot90 by 0/90/180/270° × horizontal flip with p = 0.5) on the raw uint8 image in the loader; the combra reference is built with `dihedral=True` to match | adaptation (SEM microstructures have no preferred orientation; the dataset stores 1080 originals, not 8 stored orientations each) |
 | Library compatibility | `torch.meshgrid` without `indexing`, `timm.models.layers`, `torch.cuda.amp.custom_fwd` | `indexing='ij'`, `timm.layers`, `torch.amp.custom_fwd(device_type='cuda')` — same results on current torch / timm | adaptation |
 | Evaluation and logging | in-loop FID (`utils/fid_score.py`) against a folder of real images; wandb / TensorBoard losses; argparse CLI, resume from `--ckpt` | combra FID / CMMD / FD-DINOv2 + angle metrics, sharded over ranks; kimg/tick logging, `stats.jsonl` + TensorBoard, self-describing inference snapshots (spec §3–§7); `click` CLI, no resume | contract |
 
@@ -93,21 +93,41 @@ to RGB at build time:
 
 ```bash
 styleswin-prepare-data convert --source /path/to/wc_co_source \
-    --dest ./datasets/imagenet_9to4_256x256.zip --transform center-crop --resolution 256x256
+    --dest ./datasets/imagenet_9to4_orig_256x256.zip --transform center-crop --resolution 256x256
 ```
+
+The training sets are `imagenet_9to4_orig_<r>x<r>.zip` (r = 256, 512, 1024): **1080 unique
+WC-Co crops**, 360 per class (`class_names` `['Ultra_Co25', 'Ultra_Co11', 'Ultra_Co6_2']`).
+They replace the earlier 8640-image archives, which stored each crop in all 8 dihedral
+orientations; that augmentation is now applied on the fly (`--augment`, see Training). One
+epoch is therefore 1080 images. With the default 2 GPUs the `DistributedSampler` gives each
+rank 540 images and `drop_last` keeps whole batches: 8 steps per epoch at 256 (64 per GPU),
+16 at 512 (32), 67 at 1024 (8); the few dropped images differ every epoch because the
+shuffle is re-seeded per epoch.
 
 ## Training
 
 ```bash
 # conditional, 2 GPUs, combra metrics on every snapshot tick
 styleswin-train --outdir=./runs/wc-cv \
-    --cfg styleswin-256 --data=./datasets/imagenet_9to4_256x256.zip \
+    --cfg styleswin-256 --data=./datasets/imagenet_9to4_orig_256x256.zip \
     --gpus=2 --cond True --combra-metrics True --kimg 25000 --snap 50
 ```
 
 `--cfg styleswin-{256,512,1024}` selects a per-resolution preset (each resolution is trained
 independently); `--precision {fp32,fp16,bf16}`, `--tf32/--bench` and `--grad-accum` follow
-the shared CLI. There is no flip augmentation.
+the shared CLI.
+
+`--augment True` (default) applies a uniformly random element of the dihedral group to
+every training image: a rotation by k × 90° (k = 0–3) and a horizontal flip with
+probability 0.5, on the raw uint8 image in the training loader, before ImageNet
+normalization. The draws come from the per-rank torch RNG seeded from `--seed`, so a run
+is reproducible for a fixed `--seed` / `--gpus` / `--workers`. Images must be square. Only
+the training loader augments: the combra reference, the `reals.png` grid and
+`styleswin-eval` read the stored images, and the reference is precomputed with
+`dihedral=True` so the metrics compare against the augmented distribution the generator
+learns. `--augment False` feeds the reals as stored. Not available with `--lmdb`. The bCR
+augmentations (`--bcr`) are separate and unchanged.
 
 The presets take their optimizer recipe from the upstream StyleSwin FFHQ runs (paper
 arXiv:2112.10762 appendix A / table 7, and the upstream README commands): G lr 5e-5, D lr
@@ -147,7 +167,10 @@ under `Metrics/combra_*` — `combra_fid`, `combra_cmmd`, `combra_fd_dinov2`,
 `combra_fid_best`, the angle-density metrics, and `combra_num_fid_samples` recording the
 sample count the run actually used. (Keys used to carry a literal `10k` suffix that never
 tracked `--num-fid-samples`; they no longer do.) `styleswin-eval` scores a checkpoint
-standalone. combra is optional; if missing, training warns at startup and continues.
+standalone and reproduces the training metrics: it reads the `augment` flag recorded in the
+snapshot and builds the reference with the same `dihedral` setting (snapshots without the
+flag predate `--augment` and were trained without it, so they get `dihedral=False`). The
+eval labels follow the reference's class mix (360 / 360 / 360 on the current archives). combra is optional; if missing, training warns at startup and continues.
 
 ## Generation
 

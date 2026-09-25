@@ -9,7 +9,7 @@ loop's helpers on the single-process path. Prints the metrics and, with ``--out`
 them as JSON.
 
     styleswin-eval --network run/styleswin-snapshot-000500-inference.pt \\
-        --data datasets/imagenet_9to4_256x256.zip --num-fid-samples 10000
+        --data datasets/imagenet_9to4_orig_256x256.zip --num-fid-samples 10000
 """
 
 import json
@@ -48,7 +48,11 @@ def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out)
         ref_indices = np.sort(np.random.RandomState(seed).permutation(n_ref)[:combra_ref_count]).tolist()
     else:
         ref_indices = list(range(n_ref))
-    combra_ref, ok = _combra_precompute_reference(ref_set, ref_indices, device, 0, 1)
+    # The reference must match the one training built: a run with --augment passes
+    # dihedral=True. Snapshots without the key predate --augment and trained on the
+    # stored images only.
+    augment = bool(ckpt.get('augment', False))
+    combra_ref, ok = _combra_precompute_reference(ref_set, ref_indices, device, 0, 1, dihedral=augment)
     if not ok:
         raise click.ClickException('combra reference precompute failed (see log above)')
 

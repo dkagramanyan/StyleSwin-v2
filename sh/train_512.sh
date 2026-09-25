@@ -59,7 +59,7 @@ export PYTHONUNBUFFERED=1
 styleswin-train \
     --outdir "${OUTDIR:-./runs}" \
     --cfg "${CFG:-styleswin-512}" \
-    --data "${DATA:-./datasets/imagenet_9to4_1024x1024_512x512.zip}" \
+    --data "${DATA:-./datasets/imagenet_9to4_orig_512x512.zip}" \
     --gpus "${GPUS:-2}" \
     ${BATCH_GPU:+--batch-gpu "$BATCH_GPU"} \
     --cond True \

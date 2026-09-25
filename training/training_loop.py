@@ -17,8 +17,9 @@ machinery follows the cross-model contract:
 * combra generative-quality metrics each snapshot tick, sharded across ranks, mirrored
   into both TensorBoard (``Metrics/combra_*``) and ``stats.jsonl``;
 * the **normalization contract (§5)**: uint8 at every boundary, one normalize/denormalize
-  pair (ImageNet mean/std) asserted to round-trip. No flip augmentation: the reals are
-  fed exactly as stored.
+  pair (ImageNet mean/std) asserted to round-trip. ``--augment`` applies a random dihedral
+  transform (rot90 x flip) to each raw uint8 training item in the loader; the combra
+  reference and the reals grid read the stored images unaugmented.
 """
 
 import glob
@@ -87,6 +88,40 @@ def data_sampler(dataset, shuffle, distributed, seed):
     if shuffle:
         return data.RandomSampler(dataset)
     return data.SequentialSampler(dataset)
+
+
+def _dihedral(image, k, flip):
+    # One element of the dihedral group D4 on a square CHW array: rot90 by k, then an
+    # optional horizontal flip. The 8 (k, flip) pairs are the 8 distinct elements.
+    image = np.rot90(image, k, axes=(1, 2))
+    if flip:
+        image = image[:, :, ::-1]
+    return np.ascontiguousarray(image)
+
+
+class DihedralAugment(data.Dataset):
+    """Training-loader view of an ImageFolderDataset: every item is a uniformly random
+    dihedral transform of the stored uint8 image; the label is untouched.
+
+    The draw uses torch's CPU RNG, which is seeded per rank in the training loop and
+    re-seeded by the DataLoader for each worker from that rank's stream, so a given
+    --seed / --gpus / --workers reproduces the same transforms.
+    """
+
+    def __init__(self, dataset):
+        shape = dataset.image_shape
+        if shape[1] != shape[2]:
+            raise ValueError(f'dihedral augmentation needs square images, got {shape[1]}x{shape[2]}')
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        k = int(torch.randint(4, ()))
+        flip = bool(torch.randint(2, ()))
+        return _dihedral(image, k, flip), label
 
 
 def d_logistic_loss(real_pred, fake_pred):
@@ -160,8 +195,11 @@ def _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, ran
     return np.concatenate(images, axis=0)
 
 
-def _combra_precompute_reference(reference_u8_set, ref_indices, device, rank, num_gpus):
+def _combra_precompute_reference(reference_u8_set, ref_indices, device, rank, num_gpus, dihedral):
     """This rank's slice of the raw uint8 reference, extracted and gathered by combra.
+
+    ``dihedral`` is the run's ``--augment``, passed through so combra builds the
+    reference for a generator trained on dihedrally augmented reals.
 
     Returns ``(reference, ok)``; ``ok`` is rank-uniform, so the caller can gate the
     per-tick eval on it (``reference`` is None on every non-zero rank regardless).
@@ -180,7 +218,7 @@ def _combra_precompute_reference(reference_u8_set, ref_indices, device, rank, nu
         print(f'[combra][rank {rank}] reference load failed: {e}', flush=True)
     if not all_ranks_ok(ok, device, num_gpus):
         return None, False
-    return precompute_reference(local_u8, device, rank, num_gpus)
+    return precompute_reference(local_u8, device, rank, num_gpus, dihedral=dihedral)
 
 
 def _combra_eval_distributed(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank, device, combra_ref):
@@ -336,6 +374,7 @@ def training_loop(
     D_sn                    = False,
     lr_decay                = False,
     lr_decay_start_kimg     = None,
+    augment                 = False,
 ):
     device = torch.device('cuda', rank)
     # Per-rank RNG streams (dropout / noise) differ, but the eval/grid latents below derive
@@ -383,8 +422,11 @@ def training_loop(
         print('Num classes:', n_classes)
         print()
 
-    sampler = data_sampler(training_set, shuffle=True, distributed=(num_gpus > 1), seed=random_seed)
-    loader = sample_data(data.DataLoader(training_set, batch_size=batch_gpu, sampler=sampler,
+    # --augment wraps only the loader's view: training_set itself (labels, combra
+    # reference, reals grid) stays the stored, unaugmented images.
+    loader_set = DihedralAugment(training_set) if augment else training_set
+    sampler = data_sampler(loader_set, shuffle=True, distributed=(num_gpus > 1), seed=random_seed)
+    loader = sample_data(data.DataLoader(loader_set, batch_size=batch_gpu, sampler=sampler,
                                          num_workers=workers, drop_last=True, pin_memory=True), sampler)
 
     # Empirical class distribution for fake-label sampling.
@@ -465,7 +507,7 @@ def training_loop(
         else:
             ref_indices = list(range(n_ref))
         combra_ref, combra_ref_ok = _combra_precompute_reference(
-            reference_u8_set, ref_indices, device, rank, num_gpus)
+            reference_u8_set, ref_indices, device, rank, num_gpus, dihedral=augment)
     if combra_metrics and (rank == 0) and not combra_installed:
         print("Warning: combra_metrics=True but the `combra` package is not installed -- "
               "combra metrics will be skipped. Install it (`pip install -e '.[combra]'`) to "
@@ -706,6 +748,8 @@ def training_loop(
                     'g_ema': g_ema.state_dict(),
                     'n_classes': n_classes, 'resolution': resolution,
                     'class_names': class_names, 'cur_nimg': cur_nimg, 'arch': arch,
+                    # styleswin-eval reads this to build the same combra reference.
+                    'augment': augment,
                 }
                 snapshot_name = f'styleswin-snapshot-{cur_nimg//1000:06d}-inference.pt'
                 _atomic_save(snapshot_data, os.path.join(run_dir, snapshot_name), run_dir)

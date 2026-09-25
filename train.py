@@ -16,7 +16,7 @@ enable it; ``n_classes`` and ``class_names`` are read from the dataset's ``datas
 
 Example (single stage, conditional, 2 GPUs):
 
-    styleswin-train --outdir=./runs --data=./datasets/imagenet_9to4_256x256.zip \\
+    styleswin-train --outdir=./runs --data=./datasets/imagenet_9to4_orig_256x256.zip \\
         --gpus=2 --batch-gpu=16 --cond True --combra-metrics True \\
         --kimg 25000 --snap 50
 """
@@ -179,6 +179,7 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--cond',        help='Train class-conditional model', metavar='BOOL',  type=bool, default=False, show_default=True)
 @click.option('--lmdb',        help='Use a legacy LMDB dataset (unconditional)', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--size',        help='Image resolution (lmdb only; else read from data)', metavar='INT', type=click.IntRange(min=4), default=256, show_default=True)
+@click.option('--augment',     help='Random dihedral transform (rot90 x flip) of each training image', metavar='BOOL', type=bool, default=True, show_default=True)
 @click.option('--fake-label-sampling', help='Fake-label distribution', type=click.Choice(['empirical', 'uniform']), default='empirical', show_default=True)
 # Duration / logging.
 @click.option('--kimg',        help='Total training duration', metavar='KIMG',        type=click.IntRange(min=1), default=25000, show_default=True)
@@ -227,6 +228,10 @@ def main(**kwargs):
     if opts.batch_gpu is None:
         raise click.ClickException('Provide --batch-gpu, or a --cfg preset that sets it.')
 
+    if opts.lmdb and opts.augment:
+        raise click.ClickException('--augment works on the ImageNet-style zip/dir only; '
+                                   'pass --augment False with --lmdb True.')
+
     resolution, n_classes, class_names, name = _dataset_info(opts.data, opts.lmdb, opts.size, opts.cond)
 
     if opts.cfg is not None and not opts.lmdb and resolution != RESOLUTION_CONFIGS[opts.cfg]['size']:
@@ -274,6 +279,7 @@ def main(**kwargs):
         D_sn=opts.d_sn,
         lr_decay=opts.lr_decay,
         lr_decay_start_kimg=opts.lr_decay_start * opts.kimg,
+        augment=opts.augment,
     )
 
     # Run dir: <id>-<cfg>-gpus<G>-batch<B>[-desc], B the total batch, no dataset name (§2).

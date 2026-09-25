@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "styleswin"
-version = "0.7.1"
+version = "0.7.2"
 description = "StyleSwin: Transformer-based GAN for high-resolution image generation (WC-Co microstructure fork)"
 readme = "README.md"
 authors = [{ name = "D.G.Kagramanyan" }]
@@ -54,15 +54,14 @@ dev = ["ruff", "pytest"]
 [project.urls]
 Repository = "https://github.com/dkagramanyan/StyleSwin-v2"
 
-# Console commands. The training / generation / eval / data / download entry points
-# mirror the shared model-API convention (`<model>-train`, `<model>-gen-images`,
-# `<model>-eval`, `<model>-prepare-data`, `<model>-download-models`).
+# Console commands. The training / generation / eval / data entry points mirror the
+# shared model-API convention (`<model>-train`, `<model>-gen-images`, `<model>-eval`,
+# `<model>-prepare-data`); model weights are prefetched by `bash download_models.sh`.
 [project.scripts]
 styleswin-train = "train:main"
 styleswin-gen-images = "gen_images:main"
 styleswin-eval = "eval:main"
 styleswin-prepare-data = "dataset_tool:prepare_data"
-styleswin-download-models = "download_models:main"
 
 # This is a flat script repo (train.py, gen_images.py, loose module dirs), not an
 # importable package. The top-level scripts are exposed as py-modules so the console
@@ -70,10 +69,10 @@ styleswin-download-models = "download_models:main"
 # on the mixed top-level layout, keeps `pip install -e .` a lightweight editable shell,
 # and avoids building the `op` CUDA extensions at install time.
 [tool.setuptools]
-py-modules = ["train", "gen_images", "eval", "dataset_tool", "download_models"]
+py-modules = ["train", "gen_images", "eval", "dataset_tool"]
 
 # The console scripts above import these sibling package dirs. Without this block
-# only the five py-modules are installed, so `styleswin-train` died on
+# only the four py-modules are installed, so `styleswin-train` died on
 # `No module named 'dnnlib'` and `styleswin-eval` / `styleswin-gen-images` on
 # `No module named 'models'` from any cwd but the repo root -- which the sh/*.sh
 # launchers do not guarantee. Mirrors the same block in san-v2 and edm2.

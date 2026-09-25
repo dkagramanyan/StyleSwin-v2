@@ -29,10 +29,6 @@ REQUIRED = [
     ("combra.metrics.distributed", "precompute_reference"),
     ("combra.metrics", "self_test"),
     ("combra.io", "write_hparams"),
-    # download_models.py (backbone prefetch)
-    ("combra.metrics", "cmmd_features"),
-    ("combra.metrics", "fd_dinov2_features"),
-    ("combra.metrics", "fid_features"),
 ]
 
 combra_installed = importlib.util.find_spec("combra") is not None

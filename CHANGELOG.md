@@ -5,6 +5,25 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-25
+
+### Changed
+- **Model-weight prefetch is `bash download_models.sh`, as in san-v2 and DiffiT.** A
+  pure-bash script at the repo root (wget/curl + git, no Python, no GPU) fetches the
+  combra backbones straight into the library caches: pytorch-fid InceptionV3 and the
+  DINOv2 ViT-L/14 weights + `facebookresearch_dinov2_main` repo into `torch/hub`, and
+  the CLIP ViT-L-14-336 `openai` weights into the HuggingFace hub cache
+  (`models--timm--vit_large_patch14_clip_336.openai`, which is where open_clip loads
+  them from). `MODEL_CACHE=/path` moves every cache off `~/.cache`; the jobs then need
+  `TORCH_HOME=$MODEL_CACHE/torch HF_HOME=$MODEL_CACHE/huggingface`.
+
+### Removed
+- `download_models.py` and its `styleswin-download-models` console script (and the
+  `download_models` py-module). Re-run `pip install -e .` to drop the stale command
+  from an existing env. `tests/test_combra_contract.py` no longer lists
+  `cmmd_features` / `fd_dinov2_features` / `fid_features`, which only that script
+  imported.
+
 ## [0.7.1] - 2026-09-25
 
 ### Changed

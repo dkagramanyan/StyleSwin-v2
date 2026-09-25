@@ -82,7 +82,10 @@ and `pip` inherits its credential helper. The extra requests `combra[metrics]`, 
 behind that extra, and without it `combra_fid`, `combra_cmmd` and `combra_fd_dinov2` come
 back `nan`. combra also floors Python at **3.12**, which is why this package does too.
 The metrics pull InceptionV3 / CLIP / DINOv2 backbones on first use;
-`styleswin-download-models` prefetches and caches them for offline nodes.
+`bash download_models.sh` prefetches and caches them for offline nodes (wget/curl + git,
+no Python; `MODEL_CACHE=/path bash download_models.sh` caches somewhere other than
+`~/.cache`, then point the jobs at it with `TORCH_HOME=$MODEL_CACHE/torch` and
+`HF_HOME=$MODEL_CACHE/huggingface`). StyleSwin itself has no pretrained weights.
 
 ## Data preparation
 

@@ -15,9 +15,10 @@ names, flags, checkpoint format and generated-artifact layout match the sibling 
 Relative to upstream StyleSwin it adds **class-conditional generation** over the 3 grain
 classes, a `click` CLI, StyleGAN-style kimg/tick logging, and **[combra](https://github.com/dkagramanyan/combra)**
 generative-quality metrics (FID / CMMD / FD-DINOv2 + angle-distribution) sharded across GPU
-ranks each snapshot tick. The generator/discriminator **update math is unchanged** from
-upstream — the conditioning and tooling wrap around it. Full API notes live on the wc_cv docs
-site (the `models_api` and `styleswin` pages).
+ranks each snapshot tick. The losses and regularizers (logistic GAN loss, R1, bCR) are
+upstream's; every other difference is listed in
+[Differences from upstream StyleSwin](#differences-from-upstream-styleswin). Full API notes
+live on the wc_cv docs site (the `models_api` and `styleswin` pages).
 
 ## Conditioning
 
@@ -31,6 +32,34 @@ Enable with `--cond True`; `n_classes` and `class_names` are read from the datas
   pre-logit feature and added to the logit (`models/discriminator.py`), inside StyleSwin's
   unchanged logistic loss. Fake labels default to the empirical class distribution
   (`--fake-label-sampling empirical`).
+
+## Differences from upstream StyleSwin
+
+Audited 2026-09-25 against [microsoft/StyleSwin](https://github.com/microsoft/StyleSwin)
+`main` (`train_styleswin.py`, `models/`, README training commands). Each entry is marked
+**improvement** (a deliberate change we consider better), **contract** (required by the
+shared four-repo model API), or **adaptation** (forced by our data, hardware or software
+stack).
+
+| Area | Upstream | This fork | Kind |
+|---|---|---|---|
+| Class conditioning, G | unconditional | one-hot label → `EqualLinear` (lr multiplier 1.0) → PixelNorm, concatenated with PixelNorm(`z`); the first mapping layer takes 1024 → 512 inputs. The StyleGAN2-ADA `MappingNetwork.embed` scheme, as in san-v2 (`models/generator.py`) | adaptation (3 grain classes) |
+| Class conditioning, D | unconditional | projection term (Miyato & Koyama 2018): ⟨embed(`c`), `h`⟩ / √C added to the logit, C the pre-logit feature width (`models/discriminator.py`) | adaptation |
+| Batch | total 32 at 256 (8 GPUs × 4), 16 at 1024 (8 × 2) | 64 / 32 / 8 per GPU at 256 / 512 / 1024 (total 128 / 64 / 16 on 2 GPUs) | adaptation (2 × H200) |
+| G channel multiplier at 256 | 2 | 1 (2 runs out of memory at 64 images per GPU) | adaptation |
+| G EMA | fixed decay `0.5 ** (32 / 10k)` ≈ 0.9978 per step, whatever the batch | `0.5 ** (batch / 10k)`: a 10 kimg half-life at any batch (StyleGAN2-ADA style) | improvement |
+| lr decay | G lr falls by a fixed step per iteration to reach 0 at `--iter`; D is reset to 4 × G under `--ttur` (dropping D's lazy-regularization factor, a ~6 % step up at the decay start), and without `--ttur` D subtracts G's decrement, so an unequal D lr never reaches 0 | both lrs are scaled by the same factor, so both reach 0 and keep their ratio; start given as a fraction of `--kimg` | improvement |
+| 512 recipe | none (256 and 1024 only) | interpolated: decay start 0.7625, no bCR, as at 1024 | adaptation |
+| D spectral norm | `--D_sn` in every published recipe | on in every preset (`--d-sn`), as upstream | — (same) |
+| TF32 | not set (torch defaults: matmul TF32 off, cuDNN TF32 on) | on (`--tf32 True`) | improvement (speed) |
+| Data sampler | `DistributedSampler.set_epoch` never called: every epoch repeats the same order | `set_epoch` called each pass | improvement (bug fix) |
+| Gradient accumulation / mixed precision | none | opt-in `--grad-accum`, `--precision fp16/bf16` (defaults 1 / fp32 train as upstream) | contract |
+| Horizontal flip | opt-in `--use_flip` (LSUN Church only) | removed entirely; reals are fed as stored | improvement (deliberate) |
+| Library compatibility | `torch.meshgrid` without `indexing`, `timm.models.layers`, `torch.cuda.amp.custom_fwd` | `indexing='ij'`, `timm.layers`, `torch.amp.custom_fwd(device_type='cuda')` — same results on current torch / timm | adaptation |
+| Evaluation and logging | in-loop FID (`utils/fid_score.py`) against a folder of real images; wandb / TensorBoard losses; argparse CLI, resume from `--ckpt` | combra FID / CMMD / FD-DINOv2 + angle metrics, sharded over ranks; kimg/tick logging, `stats.jsonl` + TensorBoard, self-describing inference snapshots (spec §3–§7); `click` CLI, no resume | contract |
+
+The bCR consistency-regularization flips (`utils/CRDiffAug.py`) are part of bCR's
+augmentation set and unchanged from upstream.
 
 ## Installation
 
@@ -77,8 +106,20 @@ styleswin-train --outdir=./runs/wc-cv \
 ```
 
 `--cfg styleswin-{256,512,1024}` selects a per-resolution preset (each resolution is trained
-independently); `--precision {fp32,fp16,bf16}`, `--tf32/--bench`, `--grad-accum` and the single
-`--mirror` loader-level flip follow the shared CLI. On the cluster, run the `sh/` scripts:
+independently); `--precision {fp32,fp16,bf16}`, `--tf32/--bench` and `--grad-accum` follow
+the shared CLI. There is no flip augmentation.
+
+The presets take their optimizer recipe from the upstream StyleSwin FFHQ runs (paper
+arXiv:2112.10762 appendix A / table 7, and the upstream README commands): G lr 5e-5, D lr
+2e-4, R1 10 every 16 steps, and a linear decay of both learning rates to 0 over the last
+part of `--kimg` (from 77.5 % at 256, 76.25 % at 512, 75 % at 1024; `--lr-decay`,
+`--lr-decay-start`), and spectral norm in D (`--d-sn`). bCR is on at 256 only, as upstream.
+Where they differ from upstream (batch, G channel multiplier, EMA, lr-decay details) is
+listed in [Differences from upstream StyleSwin](#differences-from-upstream-styleswin).
+The lr decay only takes effect if the run reaches the decay start, so size `--kimg` to the
+job's time limit.
+
+On the cluster, run the `sh/` scripts:
 
 ```bash
 sbatch --account=<proj> --partition=rocky --gpus=2 sh/train_256.sh   # or 512 / 1024
@@ -88,9 +129,13 @@ bash sh/train_256.sh                                                 # same scri
 Each run writes to `runs/.../NNNNN-<cfg>-gpus<G>-batch<B>[-desc]/` with `<runname>.log`,
 `stats.jsonl`, TensorBoard events, `reals.png` / `fakes<kimg>.png` grids, and — the single
 checkpoint kind — `styleswin-snapshot-<kimg>-inference.pt` (EMA-only weights + self-describing
-metadata), written atomically every snapshot tick and always at the last tick, pruned to
-`--snapshot-keep-last`. There is **no resume**: size `--kimg` (or split stages) to fit the job's
-time limit. Pick the best snapshot post-hoc from `stats.jsonl` (`Metrics/combra_fid`).
+metadata), written atomically every snapshot tick and always at the last tick. Retention
+keeps the `--snapshot-keep-last` newest (default 1; `0` keeps all) plus the best snapshot by
+each of `combra_fid`, `combra_fd_dinov2` and `combra_cmmd` (lower is better; ties keep the
+earlier one, `nan` is skipped). One file can be best at several metrics, so the default
+keeps at most 4 files; best snapshots are never pruned, and each snapshot tick logs a
+`Best snapshots: ...` line naming them. There is **no resume**: size `--kimg` (or split
+stages) to fit the job's time limit.
 
 ## Metrics (combra)
 

@@ -5,6 +5,55 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-25
+
+### Changed
+- **The `--cfg` presets use the upstream StyleSwin learning rates.** They set G lr
+  5e-5 and D lr 2e-4 (upstream's `--ttur` values, paper appendix A / table 7); they
+  used to train both at 2e-4, so G ran at 4x the upstream rate. Runs without `--cfg`
+  keep the old CLI defaults (`--glr`/`--dlr` 2e-4, `--ttur False`).
+- **New `--lr-decay` / `--lr-decay-start` (upstream `--lr_decay`).** Both learning
+  rates fall linearly to 0 from `--lr-decay-start × --kimg` to the end of training.
+  The presets turn it on, starting at 0.775 (256, upstream FFHQ-256 775k of 1M
+  iterations), 0.7625 (512, interpolated) and 0.75 (1024, upstream FFHQ-1024 600k of
+  800k). Unlike upstream, D's lr keeps its lazy-regularization factor during the
+  decay (upstream drops it, a ~6 % step up at the decay start), and without TTUR an
+  unequal D lr also reaches 0.
+- **bCR is on in the `styleswin-256` preset**, as in upstream's FFHQ-256 recipe
+  (10 / 10). About 5 % slower per kimg on a 3090, no extra memory.
+- **`styleswin-1024` preset: 8 images per GPU (was 4)**, upstream's total batch 16 on
+  the 2-GPU allocation.
+- **The conditional generator's class embedding trains at lr multiplier 1** (was the
+  mapping network's 0.01), as in StyleGAN2-ADA's `MappingNetwork.embed`. The value is
+  recorded in the snapshot `arch` block; snapshots without it are rebuilt at 0.01.
+- **Spectral norm in D is on in all three `--cfg` presets**, as in every upstream
+  recipe (`--D_sn`). The `--d-sn` CLI default stays `False` for runs without `--cfg`;
+  an explicit `--d-sn False` still overrides a preset. Cost on a 3090 (D alone, 256 px,
+  batch 16): about +4 % D step time and +0.09 GiB peak memory.
+- **Snapshot retention keeps the best snapshots.** `--snapshot-keep-last N` now keeps
+  the N newest snapshots plus the best snapshot by each of `combra_fid`,
+  `combra_fd_dinov2` and `combra_cmmd` (lower is better; ties keep the earlier
+  snapshot; `nan` / missing values are skipped). One file can hold several roles, and
+  best snapshots are never pruned. The default drops from 3 to 1 (CLI, training loop;
+  the `sh/train_*.sh` scripts already passed `KEEP_LAST` default 1), so a run keeps at
+  most 4 files. Pruning runs after that tick's combra eval has scored the newest
+  snapshot, and each snapshot tick logs
+  `Best snapshots: combra_fid <v> <file>  combra_fd_dinov2 <v> <file>  combra_cmmd <v> <file>`.
+  `0` still keeps everything.
+- **combra pin `v0.17.1` → `v0.18.0`.** combra 0.18 computes FD-DINOv2 with
+  `dinov2_vitl14`; `styleswin-download-models` fetches whatever combra uses, so it
+  needs no change (no DINOv2 model name appears in this repo).
+- **README: the upstream comparison is a full table** ("Differences from upstream
+  StyleSwin"), audited against microsoft/StyleSwin `main`, each entry marked as
+  improvement, contract or adaptation.
+
+### Removed
+- **Horizontal-flip augmentation.** `--mirror` is gone from `styleswin-train`, the
+  `sh/train_*.sh` scripts and the README, and the `xflip` option is gone from
+  `ImageFolderDataset` (and from its callers in the training loop and
+  `styleswin-eval`). Reals are fed as stored. bCR's own flips
+  (`utils/CRDiffAug.py`) are unchanged.
+
 ### Fixed
 - **`--fake-label-sampling uniform` also made the combra eval labels uniform.** The
   fixed eval label set was drawn from the training `class_probs`, so a uniform run

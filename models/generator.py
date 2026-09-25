@@ -516,6 +516,7 @@ class Generator(nn.Module):
         drop_rate=0,
         attn_drop_rate=0,
         n_classes=0,
+        class_embed_lr_mul=1.0,
     ):
         super().__init__()
         self.style_dim = style_dim
@@ -525,10 +526,15 @@ class Generator(nn.Module):
         # Class conditioning (san-v2 mapping technique): embed the one-hot label and
         # concatenate it with z at the mapping-network input, so w becomes class-dependent.
         # n_classes == 0 keeps the original unconditional path unchanged.
+        # The embedding runs at the full learning rate (lr multiplier 1), as StyleGAN2-ADA's
+        # and san-v2's MappingNetwork.embed does; only the FC mapping layers use lr_mlp.
+        # Snapshots trained before this change used lr_mlp (0.01) here; the multiplier also
+        # sets how the stored weight is scaled, so they must be rebuilt with 0.01 (their
+        # `arch` block lacks `class_embed_lr_mul`, and gen_images defaults it to 0.01).
         self.n_classes = n_classes
         mapping_in_dim = style_dim
         if n_classes > 0:
-            self.class_embed = EqualLinear(n_classes, style_dim, lr_mul=lr_mlp)
+            self.class_embed = EqualLinear(n_classes, style_dim, lr_mul=class_embed_lr_mul)
             mapping_in_dim = style_dim * 2
 
         layers = [PixelNorm()]

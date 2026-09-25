@@ -39,7 +39,7 @@ def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out)
     ckpt, n_classes, resolution, class_names, arch = _load_checkpoint(network)
     G = _build_generator(ckpt, n_classes, resolution, arch, device)
 
-    ref_set = ImageFolderDataset(path=data, use_labels=(n_classes > 0), xflip=False)
+    ref_set = ImageFolderDataset(path=data, use_labels=(n_classes > 0))
     if ref_set.resolution != resolution:
         raise click.ClickException(
             f'--data is {ref_set.resolution}px but the checkpoint generates {resolution}px images')

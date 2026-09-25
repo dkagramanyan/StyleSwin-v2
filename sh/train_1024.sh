@@ -54,13 +54,15 @@ export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export PYTHONUNBUFFERED=1
 
 # --- One console-command call ------------------------------------------------
+# Snapshots kept: the KEEP_LAST newest (default 1) plus the best by each of combra_fid,
+# combra_fd_dinov2 and combra_cmmd -- at most 4 files with the default; bests are never pruned.
 styleswin-train \
     --outdir "${OUTDIR:-./runs}" \
     --cfg "${CFG:-styleswin-1024}" \
     --data "${DATA:-./datasets/imagenet_9to4_1024x1024_1024x1024.zip}" \
     --gpus "${GPUS:-2}" \
     ${BATCH_GPU:+--batch-gpu "$BATCH_GPU"} \
-    --cond True --mirror False \
+    --cond True \
     --kimg "${KIMG:-25000}" --snap "${SNAP:-50}" --snapshot-keep-last "${KEEP_LAST:-1}" \
     --combra-metrics True --num-fid-samples "${NUM_FID_SAMPLES:-10000}" \
     --seed "${SEED:-42}" --workers "${WORKERS:-3}" \

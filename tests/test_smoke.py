@@ -35,10 +35,10 @@ def _help(script):
 
 def test_train_cli_contract():
     out = _help('train.py')
-    for flag in ('--precision', '--tf32', '--bench', '--grad-accum', '--mirror',
+    for flag in ('--precision', '--tf32', '--bench', '--grad-accum',
                  '--num-fid-samples', '--combra-ref-count', '--snapshot-keep-last', '--cfg'):
         assert flag in out, f'missing {flag}'
-    for gone in ('--resume', '--save-inference-only', '--metrics', '--use-flip'):
+    for gone in ('--resume', '--save-inference-only', '--metrics', '--use-flip', '--mirror'):
         assert gone not in out, f'{gone} should have been removed'
 
 

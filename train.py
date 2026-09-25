@@ -4,8 +4,8 @@
 """Train StyleSwin with the shared model-API click CLI (``styleswin-train``).
 
 Mirrors the cross-model training convention -- ``--outdir/--data/--gpus/--batch-gpu/--cfg``,
-kimg/ticks (``--kimg/--tick/--snap``), the ``--precision/--tf32/--bench`` scheme, the single
-``--mirror`` loader-level flip, and the ``--grad-accum`` batch formula -- while keeping
+kimg/ticks (``--kimg/--tick/--snap``), the ``--precision/--tf32/--bench`` scheme and the
+``--grad-accum`` batch formula -- while keeping
 StyleSwin's own model flags. The kimg/tick loop, logging, checkpoint contract and sharded
 combra metrics live in ``training/training_loop.py``; the generator/discriminator update
 math is unchanged from upstream StyleSwin.
@@ -35,22 +35,33 @@ from torch_utils import training_stats
 from training import training_loop
 
 #----------------------------------------------------------------------------
-# Per-resolution presets, selected with --cfg. The StyleSwin generator/discriminator are
-# resolution-parametric (built from the dataset resolution), so today these presets differ
-# only in the memory-bound batch size; the remaining knobs are bundled here so each
-# resolution has one place to tune. Any explicit CLI flag overrides the preset. Keys are
-# click parameter names.
+# Per-resolution presets, selected with --cfg. Any explicit CLI flag overrides the preset.
+# Keys are click parameter names. batch_gpu assumes the 2-GPU production allocation.
+#
+# Learning rates and schedule follow the upstream StyleSwin FFHQ recipes
+# (github.com/microsoft/StyleSwin README; paper arXiv:2112.10762, sec. 4.2, appendix A,
+# table 7): G lr 5e-5 and D lr 2e-4 (upstream gets them from --ttur), R1 10 every 16
+# steps, D channel multiplier 2, spectral norm in D (upstream --D_sn), and a linear decay
+# of both lrs to 0 from a start step:
+#   FFHQ-256:  bCR (10/10), --iter 1M, decay from 775k (0.775).
+#   FFHQ-1024: no bCR, --iter 800k, decay from 600k (0.75).
+# The decay start is kept as the same fraction of --kimg. Upstream has no 512 recipe: its
+# decay start is interpolated (0.7625) and it follows the 1024 switches (the paper reports
+# no bCR gain above 256). Kept from this fork rather than upstream: the larger per-GPU
+# batches at 256/512 (upstream: total batch 32 at 256, 16 at 1024), G channel multiplier 1
+# at 256 (upstream 2; with it, 64 images per GPU would not fit an H200) and the
+# batch-scaled EMA (training_loop).
+
+_COMMON = dict(enable_full_resolution=8, d_channel_multiplier=2, glr=0.00005, dlr=0.0002,
+               lr_decay=True, r1=10.0, d_reg_every=16, style_dim=512, d_sn=True)
 
 RESOLUTION_CONFIGS = {
-    'styleswin-256':  dict(size=256,  batch_gpu=64, enable_full_resolution=8,
-                           g_channel_multiplier=1, d_channel_multiplier=2,
-                           glr=0.0002, dlr=0.0002, r1=10.0, d_reg_every=16, style_dim=512),
-    'styleswin-512':  dict(size=512,  batch_gpu=32,  enable_full_resolution=8,
-                           g_channel_multiplier=1, d_channel_multiplier=2,
-                           glr=0.0002, dlr=0.0002, r1=10.0, d_reg_every=16, style_dim=512),
-    'styleswin-1024': dict(size=1024, batch_gpu=4,  enable_full_resolution=8,
-                           g_channel_multiplier=1, d_channel_multiplier=2,
-                           glr=0.0002, dlr=0.0002, r1=10.0, d_reg_every=16, style_dim=512),
+    'styleswin-256':  dict(_COMMON, size=256,  batch_gpu=64, g_channel_multiplier=1,
+                           bcr=True,  lr_decay_start=0.775),
+    'styleswin-512':  dict(_COMMON, size=512,  batch_gpu=32, g_channel_multiplier=1,
+                           bcr=False, lr_decay_start=0.7625),
+    'styleswin-1024': dict(_COMMON, size=1024, batch_gpu=8,  g_channel_multiplier=1,
+                           bcr=False, lr_decay_start=0.75),
 }
 
 #----------------------------------------------------------------------------
@@ -166,7 +177,6 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--grad-accum',  help='Gradient-accumulation micro-steps per optimizer step', metavar='INT', type=click.IntRange(min=1), default=1, show_default=True)
 # Conditioning / dataset.
 @click.option('--cond',        help='Train class-conditional model', metavar='BOOL',  type=bool, default=False, show_default=True)
-@click.option('--mirror',      help='Stochastic per-item horizontal flip in the training loader', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--lmdb',        help='Use a legacy LMDB dataset (unconditional)', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--size',        help='Image resolution (lmdb only; else read from data)', metavar='INT', type=click.IntRange(min=4), default=256, show_default=True)
 @click.option('--fake-label-sampling', help='Fake-label distribution', type=click.Choice(['empirical', 'uniform']), default='empirical', show_default=True)
@@ -177,7 +187,7 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--combra-metrics', help='Compute combra metrics each snapshot tick', metavar='BOOL', type=bool, default=True, show_default=True)
 @click.option('--num-fid-samples', help='Fakes generated for the combra image metrics (0 disables eval)', metavar='INT', type=click.IntRange(min=0), default=10000, show_default=True)
 @click.option('--combra-ref-count', help='Cap the combra reference to a seeded random subset (0 = whole set)', metavar='INT', type=click.IntRange(min=0), default=0, show_default=True)
-@click.option('--snapshot-keep-last', help='Keep only the most recent N inference snapshots (0 = keep all)', metavar='INT', type=click.IntRange(min=0), default=3, show_default=True)
+@click.option('--snapshot-keep-last', help='Keep the N newest inference snapshots plus the best by combra_fid / combra_fd_dinov2 / combra_cmmd (0 = keep all)', metavar='INT', type=click.IntRange(min=0), default=1, show_default=True)
 @click.option('--seed',        help='Random seed', metavar='INT',                     type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--workers',     help='DataLoader worker processes', metavar='INT',     type=click.IntRange(min=1), default=3, show_default=True)
 @click.option('--desc',        help='String to include in the run dir name', metavar='STR', type=str)
@@ -193,7 +203,7 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--enable-full-resolution', help='Full-attention resolution index', metavar='INT', type=click.IntRange(min=1), default=8, show_default=True)
 @click.option('--g-channel-multiplier', help='Generator channel multiplier', metavar='INT', type=click.IntRange(min=1), default=1, show_default=True)
 @click.option('--d-channel-multiplier', help='Discriminator channel multiplier', metavar='INT', type=click.IntRange(min=1), default=2, show_default=True)
-@click.option('--glr',         help='G learning rate', metavar='FLOAT',               type=click.FloatRange(min=0), default=0.0002, show_default=True)
+@click.option('--glr',         help='G learning rate (unused under --ttur)', metavar='FLOAT', type=click.FloatRange(min=0), default=0.0002, show_default=True)
 @click.option('--dlr',         help='D learning rate', metavar='FLOAT',               type=click.FloatRange(min=0), default=0.0002, show_default=True)
 @click.option('--r1',          help='R1 regularization weight', metavar='FLOAT',      type=float, default=10.0, show_default=True)
 @click.option('--d-reg-every', help='Apply R1 every N steps', metavar='INT',          type=click.IntRange(min=1), default=16, show_default=True)
@@ -201,6 +211,8 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--ttur',        help='Use TTUR (G_lr = D_lr / 4)', metavar='BOOL',     type=bool, default=False, show_default=True)
 @click.option('--bcr',         help='Enable bCR consistency regularization', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--d-sn',        help='Spectral norm in D', metavar='BOOL',             type=bool, default=False, show_default=True)
+@click.option('--lr-decay',    help='Linearly decay both learning rates to 0 over the end of training', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--lr-decay-start', help='Fraction of --kimg at which the lr decay starts', metavar='FLOAT', type=click.FloatRange(min=0, max=1, max_open=True), default=0.775, show_default=True)
 @click.option('--use-checkpoint', help='Gradient checkpointing in G', metavar='BOOL', type=bool, default=False, show_default=True)
 def main(**kwargs):
     opts = dnnlib.EasyDict(kwargs)
@@ -242,7 +254,6 @@ def main(**kwargs):
         combra_ref_count=opts.combra_ref_count,
         snapshot_keep_last=opts.snapshot_keep_last,
         fake_label_sampling=opts.fake_label_sampling,
-        mirror=opts.mirror,
         precision=opts.precision,
         tf32=opts.tf32,
         bench=opts.bench,
@@ -261,6 +272,8 @@ def main(**kwargs):
         bcr=opts.bcr,
         use_checkpoint=opts.use_checkpoint,
         D_sn=opts.d_sn,
+        lr_decay=opts.lr_decay,
+        lr_decay_start_kimg=opts.lr_decay_start * opts.kimg,
     )
 
     # Run dir: <id>-<cfg>-gpus<G>-batch<B>[-desc], B the total batch, no dataset name (§2).

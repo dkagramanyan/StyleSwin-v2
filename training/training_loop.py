@@ -11,13 +11,14 @@ machinery follows the cross-model contract:
 * the **checkpoint contract (§3)**: exactly one artifact kind --
   ``styleswin-snapshot-<kimg:06d>-inference.pt`` (EMA-only weights + self-describing
   metadata), written atomically every snapshot tick **and always at the last tick**,
-  history pruned to ``--snapshot-keep-last``. No resume, no rolling ``latest``, no
-  ``best_model.*``;
+  history pruned to the ``--snapshot-keep-last`` newest plus the best by each of
+  combra_fid / combra_fd_dinov2 / combra_cmmd (never pruned). No resume, no rolling
+  ``latest``, no ``best_model.*``;
 * combra generative-quality metrics each snapshot tick, sharded across ranks, mirrored
   into both TensorBoard (``Metrics/combra_*``) and ``stats.jsonl``;
 * the **normalization contract (§5)**: uint8 at every boundary, one normalize/denormalize
-  pair (ImageNet mean/std) asserted to round-trip; ``--mirror`` is a loader-level flip that
-  never touches the combra reference.
+  pair (ImageNet mean/std) asserted to round-trip. No flip augmentation: the reals are
+  fed exactly as stored.
 """
 
 import glob
@@ -308,9 +309,8 @@ def training_loop(
     combra_metrics          = True,
     num_fid_samples         = 10000,
     combra_ref_count        = 0,
-    snapshot_keep_last      = 3,
+    snapshot_keep_last      = 1,
     fake_label_sampling     = 'empirical',
-    mirror                  = False,
     precision               = 'fp32',
     tf32                    = True,
     bench                   = True,
@@ -334,6 +334,8 @@ def training_loop(
     bcr_real_lambda         = 10.0,
     use_checkpoint          = False,
     D_sn                    = False,
+    lr_decay                = False,
+    lr_decay_start_kimg     = None,
 ):
     device = torch.device('cuda', rank)
     # Per-rank RNG streams (dropout / noise) differ, but the eval/grid latents below derive
@@ -351,7 +353,8 @@ def training_loop(
     # label contract): a conditional run without names is refused by the launcher,
     # never given fabricated '0','1',... that downstream code cannot tell from real ones.
     arch = dict(style_dim=style_dim, n_mlp=n_mlp, channel_multiplier=g_channel_multiplier,
-                lr_mlp=lr_mlp, enable_full_resolution=enable_full_resolution)
+                lr_mlp=lr_mlp, enable_full_resolution=enable_full_resolution,
+                class_embed_lr_mul=1.0)
 
     def stage(msg):
         if rank == 0:
@@ -369,10 +372,8 @@ def training_loop(
         training_set = MultiResolutionDataset(data_path, tfm, resolution)
         reference_u8_set = None
     else:
-        # ImageNet-style zip/dir (uint8 CHW + one-hot label). xflip is never applied here:
-        # --mirror is a loader-level augmentation (below), so the dataset -- and thus the
-        # combra reference -- is never flip-doubled.
-        training_set = ImageFolderDataset(path=data_path, use_labels=(n_classes > 0), xflip=False)
+        # ImageNet-style zip/dir (uint8 CHW + one-hot label).
+        training_set = ImageFolderDataset(path=data_path, use_labels=(n_classes > 0))
         reference_u8_set = training_set  # raw uint8; the fixed combra reference
 
     if rank == 0:
@@ -403,7 +404,8 @@ def training_loop(
     def make_G():
         return Generator(resolution, style_dim, n_mlp, channel_multiplier=g_channel_multiplier,
                          lr_mlp=lr_mlp, enable_full_resolution=enable_full_resolution,
-                         use_checkpoint=use_checkpoint, n_classes=n_classes).to(device)
+                         use_checkpoint=use_checkpoint, n_classes=n_classes,
+                         class_embed_lr_mul=arch['class_embed_lr_mul']).to(device)
 
     generator = make_G()
     discriminator = Discriminator(resolution, channel_multiplier=d_channel_multiplier,
@@ -517,7 +519,15 @@ def training_loop(
     cur_nimg = 0
     batch_size = batch_gpu * num_gpus * grad_accum          # the total batch (§2 formula)
     accum = 0.5 ** (batch_size / (10 * 1000))               # EMA half-life ~10 kimg
+    # --lr-decay (upstream --lr_decay): from the start on, both learning rates fall
+    # linearly and reach 0 at the end of training. Written in images instead of
+    # iterations, which is the same schedule at a fixed batch.
+    g_lr_start = g_optim.param_groups[0]['lr']
+    d_lr_start = d_optim.param_groups[0]['lr']
+    lr_decay_start_nimg = (lr_decay_start_kimg or 0) * 1000
+    total_nimg = total_kimg * 1000
     best_fid = float('inf')
+    best_snaps = {}     # metric -> (value, snapshot file name); these files are never pruned
     cur_tick = 0
     tick_start_nimg = cur_nimg
     tick_start_time = time.time()
@@ -526,8 +536,7 @@ def training_loop(
     batch_idx = 0
 
     def next_real():
-        # One micro-batch of ImageNet-normalized reals (+ optional loader-level mirror flip),
-        # and the matching labels (or None). combra never sees this flip -- it reads the raw set.
+        # One micro-batch of ImageNet-normalized reals and the matching labels (or None).
         real_batch = next(loader)
         if lmdb:
             real_img = real_batch.to(device)
@@ -540,10 +549,6 @@ def training_loop(
             real_u8, _ = real_batch
             real_img = _normalize_real(real_u8, device)
             real_labels = None
-        if mirror:
-            flip = torch.rand(real_img.shape[0], device=device) < 0.5
-            if flip.any():
-                real_img[flip] = real_img[flip].flip(-1)
         return real_img, real_labels
 
     while True:
@@ -607,6 +612,17 @@ def training_loop(
 
         cur_nimg += batch_size
         batch_idx += 1
+
+        if lr_decay and cur_nimg > lr_decay_start_nimg:
+            # Both lrs scale by the same factor, so each reaches 0 and G:D keeps its ratio.
+            # Upstream differs in two corner cases: it resets D's lr without the
+            # d_reg_ratio factor (a ~6% step up at the start), and without --ttur it
+            # subtracts G's decrement from D, so an unequal D lr never reaches 0.
+            scale = 1.0 - min((cur_nimg - lr_decay_start_nimg) / (total_nimg - lr_decay_start_nimg), 1.0)
+            for group in g_optim.param_groups:
+                group['lr'] = g_lr_start * scale
+            for group in d_optim.param_groups:
+                group['lr'] = d_lr_start * scale
 
         # ---------------------------------------------- tick maintenance.
         done = (cur_nimg >= total_kimg * 1000)
@@ -683,7 +699,9 @@ def training_loop(
                 if stats_tfevents is not None:
                     stats_tfevents.add_image('Fakes', _grid_hwc_u8(grid), global_step=cur_nimg, dataformats='HWC')
                 # The single artifact kind: EMA-only weights + self-describing metadata,
-                # written atomically, pruned to --snapshot-keep-last.
+                # written atomically, pruned to the --snapshot-keep-last newest plus the
+                # best per metric. The metrics above were computed on this same g_ema at
+                # this same cur_nimg, so they describe the file saved here.
                 snapshot_data = {
                     'g_ema': g_ema.state_dict(),
                     'n_classes': n_classes, 'resolution': resolution,
@@ -692,10 +710,16 @@ def training_loop(
                 snapshot_name = f'styleswin-snapshot-{cur_nimg//1000:06d}-inference.pt'
                 _atomic_save(snapshot_data, os.path.join(run_dir, snapshot_name), run_dir)
                 print(f'Saved {snapshot_name}', flush=True)
-                if snapshot_keep_last > 0:
-                    old_snaps = sorted(glob.glob(os.path.join(run_dir, 'styleswin-snapshot-*-inference.pt')))
-                    for old in old_snaps[:-snapshot_keep_last]:
-                        os.remove(old)
+                _update_best_snapshots(best_snaps, stats_metrics, snapshot_name)
+                if best_snaps:
+                    print('Best snapshots: ' + '  '.join(
+                        f'{k} {best_snaps[k][0]:.4f} {best_snaps[k][1]}'
+                        for k in _BEST_SNAPSHOT_METRICS if k in best_snaps), flush=True)
+                snaps = sorted(os.path.basename(f) for f in
+                               glob.glob(os.path.join(run_dir, 'styleswin-snapshot-*-inference.pt')))
+                protected = {n for _, n in best_snaps.values()}
+                for old in _snapshots_to_prune(snaps, snapshot_keep_last, protected):
+                    os.remove(os.path.join(run_dir, old))
 
         # Update logs.
         timestamp = time.time()
@@ -740,6 +764,30 @@ def training_loop(
             stats_jsonl.close()
 
 #----------------------------------------------------------------------------
+
+# Metrics whose best snapshot is kept regardless of --snapshot-keep-last (lower is better).
+_BEST_SNAPSHOT_METRICS = ('combra_fid', 'combra_fd_dinov2', 'combra_cmmd')
+
+
+def _update_best_snapshots(best, metrics, snapshot_name):
+    """Record ``snapshot_name`` as the best for each metric it improves (non-finite ignored)."""
+    for key in _BEST_SNAPSHOT_METRICS:
+        value = metrics.get(key)
+        if value is not None and math.isfinite(value) and (key not in best or value < best[key][0]):
+            best[key] = (value, snapshot_name)
+
+
+def _snapshots_to_prune(snapshots, keep_last, protected):
+    """Snapshots to delete: all but the ``keep_last`` newest and the ``protected`` ones.
+
+    ``snapshots`` are file names whose sort order is age order (the zero-padded kimg).
+    ``keep_last == 0`` keeps everything.
+    """
+    if keep_last == 0:
+        return []
+    snapshots = sorted(snapshots)
+    return [s for s in snapshots[:-keep_last] if s not in protected]
+
 
 def _atomic_save(obj, path, run_dir):
     # Write to a temp file in the same directory, then os.replace into place, so a snapshot

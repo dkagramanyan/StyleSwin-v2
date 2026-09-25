@@ -38,8 +38,10 @@ _IMAGENET_STD = (0.229, 0.224, 0.225)
 
 # Architecture defaults for legacy checkpoints that predate the self-describing `arch`
 # metadata block (§3). New checkpoints carry the exact values used at training time.
+# class_embed_lr_mul: snapshots written before it was recorded trained the class
+# embedding at lr_mlp = 0.01, and that multiplier scales the stored weight.
 _ARCH_DEFAULTS = dict(style_dim=512, n_mlp=8, channel_multiplier=1, lr_mlp=0.01,
-                      enable_full_resolution=8)
+                      enable_full_resolution=8, class_embed_lr_mul=0.01)
 
 #----------------------------------------------------------------------------
 
@@ -91,7 +93,7 @@ def _build_generator(ckpt, n_classes, resolution, arch, device):
     G = Generator(resolution, arch['style_dim'], arch['n_mlp'],
                   channel_multiplier=arch['channel_multiplier'], lr_mlp=arch['lr_mlp'],
                   enable_full_resolution=arch['enable_full_resolution'],
-                  n_classes=n_classes).to(device)
+                  n_classes=n_classes, class_embed_lr_mul=arch['class_embed_lr_mul']).to(device)
     G.load_state_dict(ckpt['g_ema'])
     G.eval()
     return G

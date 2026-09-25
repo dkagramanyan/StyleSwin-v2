@@ -162,6 +162,45 @@ def test_eval_reads_augment_from_snapshot(monkeypatch, tmp_path, stored, expecte
     assert seen['dihedral'] is expected
 
 
+@pytest.mark.parametrize('stored, argv, expected', [({'seed': 42}, [], 42),
+                                                    ({}, [], 0),  # pre-seed snapshot
+                                                    ({'seed': 42}, ['--seed', '7'], 7)])
+def test_eval_seed_defaults_to_snapshot(monkeypatch, tmp_path, stored, argv, expected):
+    # The capped reference subset is seed-derived, so it shows which seed eval used.
+    from click.testing import CliRunner
+
+    import dataset.imagenet_dataset
+    import eval as eval_mod
+
+    ckpt = dict(stored, n_classes=3, resolution=5)
+    seen = {}
+
+    class _RefSet(_FakeSet):
+        resolution = 5
+
+        def __init__(self, path, use_labels):
+            super().__init__(n=6)
+
+        def _get_raw_labels(self):
+            return np.array([0, 1, 2, 0, 1, 2])
+
+    def fake_ref(ref_set, ref_indices, device, rank, n, dihedral):
+        seen['ref_indices'] = ref_indices
+        return {}, True
+
+    monkeypatch.setattr(eval_mod, '_load_checkpoint', lambda p: (ckpt, 3, 5, ['a', 'b', 'c'], dict(style_dim=4)))
+    monkeypatch.setattr(eval_mod, '_build_generator', lambda *a: None)
+    monkeypatch.setattr(dataset.imagenet_dataset, 'ImageFolderDataset', _RefSet)
+    monkeypatch.setattr(eval_mod, '_combra_precompute_reference', fake_ref)
+    monkeypatch.setattr(eval_mod, '_combra_eval_distributed', lambda *a: {'fid': 1.0})
+    monkeypatch.setattr(eval_mod.torch.cuda, 'is_available', lambda: False)
+
+    r = CliRunner().invoke(eval_mod.main, ['--network', 'x.pt', '--data', str(tmp_path),
+                                           '--num-fid-samples', '6', '--combra-ref-count', '3'] + argv)
+    assert r.exit_code == 0, r.output
+    assert seen['ref_indices'] == np.sort(np.random.RandomState(expected).permutation(6)[:3]).tolist()
+
+
 def test_combra_precompute_reference_accepts_dihedral():
     combra_dist = pytest.importorskip('combra.metrics.distributed')
     params = inspect.signature(combra_dist.precompute_reference).parameters

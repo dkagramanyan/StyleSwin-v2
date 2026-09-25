@@ -172,8 +172,10 @@ sample count the run actually used. (Keys used to carry a literal `10k` suffix t
 tracked `--num-fid-samples`; they no longer do.) `styleswin-eval` scores a checkpoint
 standalone and reproduces the training metrics: it reads the `augment` flag recorded in the
 snapshot and builds the reference with the same `dihedral` setting (snapshots without the
-flag predate `--augment` and were trained without it, so they get `dihedral=False`). The
-eval labels follow the reference's class mix (360 / 360 / 360 on the current archives). combra is optional; if missing, training warns at startup and continues.
+flag predate `--augment` and were trained without it, so they get `dihedral=False`). It
+also defaults `--seed` to the training `--seed` stored in the snapshot (0 for snapshots
+that predate the key), since the eval latents, labels and capped reference subset derive
+from it. The eval labels follow the reference's class mix (360 / 360 / 360 on the current archives). combra is optional; if missing, training warns at startup and continues.
 
 ## Generation
 

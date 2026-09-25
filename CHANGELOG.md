@@ -5,6 +5,26 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+### Fixed
+- **A scalar not reported this tick is left out of `stats.jsonl` and TensorBoard (§7).**
+  The stats collector ran with `keep_previous=True`, which carries a name's previous
+  average forward on ticks that report nothing, and only `Timing/eval_sec` was popped.
+  R1 runs every `--d-reg-every` (16) iterations, so a short final tick repeated the
+  previous `Loss/r1`. The collector now runs with `keep_previous=False` and every name
+  with `num == 0` this tick is dropped (`reported_this_tick`), which generalises the
+  `eval_sec` pop. A reported `Loss/r1` is unchanged.
+- **`styleswin-eval` defaults `--seed` to the training seed.** The eval latents, labels
+  and capped reference subset derive from the seed, but eval defaulted to 0 while the
+  train scripts use 42, so standalone scores silently differed from the training log.
+  Snapshots now store `seed` next to `augment`, and eval uses it unless `--seed` is
+  given; snapshots without the key fall back to 0 as before.
+- **Host RAM at 1024: the generated eval shard is no longer held twice.** Each rank
+  collected its uint8 batches in a list and `np.concatenate`d them, briefly doubling
+  ~15.7 GB. The batches are now written into one preallocated uint8 array.
+
+### Changed
+- **combra pinned to v0.19.1.**
+
 ## [0.7.2] - 2026-09-25
 
 ### Changed

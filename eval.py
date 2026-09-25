@@ -30,13 +30,19 @@ from training.training_loop import _combra_eval_distributed, _combra_eval_labels
 @click.option('--combra-ref-count', help='Cap the reference to a seeded random subset (0 = whole set)',
               type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--batch-gpu', help='Batch size per forward', type=click.IntRange(min=1), default=32, show_default=True)
-@click.option('--seed', help='Seed for the eval latents / reference subset', type=int, default=0, show_default=True)
+@click.option('--seed', help='Seed for the eval latents / reference subset  [default: the training --seed stored '
+              'in the snapshot, else 0]', type=int, default=None)
 @click.option('--out', help='Optional path to write the metrics JSON', metavar='PATH', default=None)
 def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out):
     from dataset.imagenet_dataset import ImageFolderDataset
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ckpt, n_classes, resolution, class_names, arch = _load_checkpoint(network)
+    if seed is None:
+        # The eval latents, labels and capped reference subset are all derived from the
+        # seed, so the training --seed is what reproduces the logged metrics. Snapshots
+        # without the key predate it.
+        seed = int(ckpt.get('seed', 0))
     G = _build_generator(ckpt, n_classes, resolution, arch, device)
 
     ref_set = ImageFolderDataset(path=data, use_labels=(n_classes > 0))

@@ -71,3 +71,31 @@ def test_non_finite_values_are_written_as_null():
     back = json.loads(json.dumps(row, allow_nan=False))
     assert back["Loss/r1"] is None and back["Metrics/combra_fid"] is None
     assert back["Progress/tick"] == 7 and isinstance(back["Progress/tick"], int)
+
+
+def test_collector_drops_scalars_not_reported_this_tick():
+    # §7: a scalar not reported this tick is left out, not repeated. R1 runs every
+    # --d-reg-every iterations, so a short tick can report no Loss/r1 at all.
+    from torch_utils import training_stats
+    from training.training_loop import reported_this_tick
+
+    collector = training_stats.Collector(regex="Test/.*", keep_previous=False)
+    training_stats.report("Test/every_iter", 1.0)
+    training_stats.report("Test/r1", 3.0)
+    collector.update()
+    first = reported_this_tick(collector.as_dict())
+    assert first["Test/r1"].mean == 3.0 and first["Test/every_iter"].mean == 1.0
+
+    training_stats.report("Test/every_iter", 2.0)
+    collector.update()
+    second = reported_this_tick(collector.as_dict())
+    assert "Test/r1" not in second
+    assert second["Test/every_iter"].mean == 2.0
+
+
+def test_training_loop_collector_does_not_keep_previous():
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parents[1] / "training/training_loop.py").read_text()
+    assert "Collector(regex='.*', keep_previous=False)" in src
+    assert "reported_this_tick(stats_collector.as_dict())" in src

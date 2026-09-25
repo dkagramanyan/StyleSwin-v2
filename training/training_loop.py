@@ -183,16 +183,24 @@ def _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, ran
     # This rank's shard as uint8 NCHW. Each batch is denormalized as soon as it is
     # generated, so neither the whole shard in fp32 on the GPU nor its float
     # temporaries on the CPU ever exist at once (identical bytes: the denorm is per-pixel).
+    # The batches are written into one preallocated array: collecting a list and
+    # concatenating it briefly held the shard twice (~15.7 GB extra host RAM at 1024).
     n = grid_z.shape[0]
     idx = torch.arange(rank, n, num_gpus, device=grid_z.device)
     z = grid_z.index_select(0, idx)
-    if grid_c is not None:
-        c = grid_c.index_select(0, idx)
-        images = [_denorm_to_uint8(G_ema(zz, cc)[0].cpu().numpy())
-                  for zz, cc in zip(z.split(batch_gpu), c.split(batch_gpu))]
-    else:
-        images = [_denorm_to_uint8(G_ema(zz)[0].cpu().numpy()) for zz in z.split(batch_gpu)]
-    return np.concatenate(images, axis=0)
+    c_batches = grid_c.index_select(0, idx).split(batch_gpu) if grid_c is not None else None
+    out = None
+    start = 0
+    for i, zz in enumerate(z.split(batch_gpu)):
+        imgs = G_ema(zz, c_batches[i])[0] if c_batches is not None else G_ema(zz)[0]
+        imgs = _denorm_to_uint8(imgs.cpu().numpy())
+        if out is None:
+            out = np.empty((z.shape[0],) + imgs.shape[1:], dtype=np.uint8)
+        out[start:start + len(imgs)] = imgs
+        start += len(imgs)
+    if out is None:  # as np.concatenate([]) raised before: fewer fakes than ranks
+        raise ValueError('empty generation shard on this rank')
+    return out
 
 
 def _combra_precompute_reference(reference_u8_set, ref_indices, device, rank, num_gpus, dihedral):
@@ -269,6 +277,18 @@ def _write_run_hparams(run_dir, writer, metrics, step):
     with open(path) as fh:
         config = json.load(fh)
     write_hparams(writer, config, metrics, step=step)
+
+
+def reported_this_tick(stats_dict):
+    """The collector's scalars that received a value this tick (§7).
+
+    A scalar not reported this tick is left out rather than repeated. The collector
+    runs with ``keep_previous=False``, so such a name comes back with ``num == 0``
+    (and a NaN mean); ``keep_previous=True`` would instead carry the previous tick's
+    average forward -- e.g. ``Loss/r1`` (every ``--d-reg-every`` iterations) on a short
+    final tick, or ``Timing/eval_sec`` on every tick after an eval.
+    """
+    return {name: value for name, value in stats_dict.items() if value.num > 0}
 
 
 def build_stats_row(stats_dict, stats_metrics, timestamp, start_time):
@@ -532,7 +552,7 @@ def training_loop(
     grid_z, grid_c, grid_ncol = _make_grid_latents(resolution, n_classes, style_dim, random_seed, device)
 
     # ------------------------------------------------------------------ Logging.
-    stats_collector = training_stats.Collector(regex='.*')
+    stats_collector = training_stats.Collector(regex='.*', keep_previous=False)
     stats_metrics = dict()
     stats_jsonl = None
     stats_tfevents = None
@@ -695,7 +715,6 @@ def training_loop(
         # values at a new step -- turning the metric curves into step functions and
         # letting post-hoc snapshot selection resolve to a kimg never evaluated.
         stats_metrics = {}
-        eval_ran = False
         snapshot = (done or (cur_tick > 0 and cur_tick % snap_ticks == 0))
         if snapshot:
             g_ema.eval()
@@ -718,7 +737,6 @@ def training_loop(
                 # and Collector.update() all_reduces over the registered set -- so a name
                 # only rank 0 ever reported makes that reduction disagree on shape.
                 training_stats.report0('Timing/eval_sec', time.time() - eval_start)
-                eval_ran = True
                 if rank == 0 and combra_results is not None:
                     # Bare keys (combra_fid, not combra_fid10k): the old `10k` suffix
                     # was a literal that stayed 10k whatever --num-fid-samples said, so
@@ -748,8 +766,9 @@ def training_loop(
                     'g_ema': g_ema.state_dict(),
                     'n_classes': n_classes, 'resolution': resolution,
                     'class_names': class_names, 'cur_nimg': cur_nimg, 'arch': arch,
-                    # styleswin-eval reads this to build the same combra reference.
-                    'augment': augment,
+                    # styleswin-eval reads these to build the same combra reference and
+                    # draw the same eval latents / labels / reference subset.
+                    'augment': augment, 'seed': random_seed,
                 }
                 snapshot_name = f'styleswin-snapshot-{cur_nimg//1000:06d}-inference.pt'
                 _atomic_save(snapshot_data, os.path.join(run_dir, snapshot_name), run_dir)
@@ -771,11 +790,7 @@ def training_loop(
         # NOTE: stats_metrics was cleared before the snapshot block above, so a tick
         # with no combra eval writes no combra columns rather than repeating the
         # previous tick's values at a new step.
-        stats_dict = stats_collector.as_dict()
-        # The collector keeps a name's previous average on ticks that report nothing
-        # (keep_previous=True), which would repeat the last eval time on every later tick.
-        if not eval_ran:
-            stats_dict.pop('Timing/eval_sec', None)
+        stats_dict = reported_this_tick(stats_collector.as_dict())
         if stats_jsonl is not None:
             row = build_stats_row(stats_dict, stats_metrics, timestamp, start_time)
             stats_jsonl.write(json.dumps(row, allow_nan=False) + '\n')

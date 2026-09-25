@@ -102,3 +102,27 @@ def test_angle_metrics_run_on_pooled_angles():
     )
     for key in ("w1", "w2", "circular_w1", "circular_w2", "mu1", "sigma1", "pi"):
         assert np.isfinite(out[key]), f"{key} is not finite"
+
+
+@pytest.mark.parametrize("conditional", [False, True])
+def test_generate_local_shard_matches_per_batch_denorm(conditional):
+    # The shard is filled in place into one preallocated uint8 array; it must hold
+    # exactly this rank's strided slice, batch by batch, in order.
+    import numpy as np
+    torch = pytest.importorskip("torch")
+
+    from training.training_loop import _combra_generate_local_shard, _denorm_to_uint8
+
+    def G(z, c=None):
+        x = z[:, :1, None, None].expand(-1, 3, 2, 2) * 0.1
+        if c is not None:
+            x = x + c.argmax(1)[:, None, None, None] * 0.01
+        return (x,)
+
+    z = torch.randn(7, 4)
+    c = torch.eye(3)[torch.arange(7) % 3] if conditional else None
+    out = _combra_generate_local_shard(G, z, c, batch_gpu=2, num_gpus=2, rank=1)
+    idx = torch.arange(1, 7, 2)
+    ref = _denorm_to_uint8(G(z[idx], c[idx] if conditional else None)[0].numpy())
+    assert out.dtype == np.uint8 and out.shape == (3, 3, 2, 2)
+    assert np.array_equal(out, ref)

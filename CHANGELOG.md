@@ -5,6 +5,22 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-09-25
+
+### Changed
+- **Train launch scripts (`sh/train_{256,512,1024}.sh`): one run settings block, self-detach, full log.**
+  Every knob the script uses is now a plain `NAME="${NAME:-default}"` line in a block at
+  the top (edit it there, or override one value per launch with an env var); the command
+  reads the plain variables. Defaults and the effective command are unchanged (checked
+  for every script with defaults, env overrides and appended CLI arguments).
+- On a workstation `bash sh/train_<res>.sh` re-launches itself with `setsid nohup` and
+  returns at once, printing the log path: all output goes to
+  `logs/<model>-train_<res>-<date>-<time>.log` with a `.pid` file beside it, and
+  `kill -- -<pid>` stops the whole process group. `FOREGROUND=1` stays attached; under
+  SLURM it never detaches. Both copy the output to the same log (`tee`). The log opens
+  with a `Run settings:` block (every setting, git commit with `-dirty`, host, date,
+  `CUDA_VISIBLE_DEVICES`, the full command). README launch section updated.
+
 ## [0.7.3] - 2026-09-25
 
 ### Fixed

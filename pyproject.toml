@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "styleswin"
-version = "0.7.3"
+version = "0.7.4"
 description = "StyleSwin: Transformer-based GAN for high-resolution image generation (WC-Co microstructure fork)"
 readme = "README.md"
 authors = [{ name = "D.G.Kagramanyan" }]

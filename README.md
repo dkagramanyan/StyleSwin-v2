@@ -142,12 +142,23 @@ listed in [Differences from upstream StyleSwin](#differences-from-upstream-style
 The lr decay only takes effect if the run reaches the decay start, so size `--kimg` to the
 job's time limit.
 
-On the cluster, run the `sh/` scripts:
+On the cluster, run the `sh/` scripts. Every setting of a run sits in the block at the top
+of the train script: edit the block, or override one value for a single launch with an env
+var (`KIMG=200 SNAP=2 bash sh/train_256.sh`).
 
 ```bash
 sbatch --account=<proj> --partition=rocky --gpus=2 sh/train_256.sh   # or 512 / 1024
-bash sh/train_256.sh                                                 # same script on a workstation
+bash sh/train_256.sh                                                 # workstation: detaches, prints the log path
+FOREGROUND=1 bash sh/train_256.sh                                    # workstation, stays attached
 ```
+
+On a workstation the train script re-launches itself in its own session and returns at
+once, so the run survives closing the terminal. Everything it prints goes to
+`logs/styleswin-train_256-<date>-<time>.log`, with a `.pid` file beside it: follow the run
+with `tail -f <log>`, stop it (every rank) with `kill -- -<pid>`. `FOREGROUND=1` and SLURM
+jobs stay attached and copy the output to the same log. The log opens with a
+`Run settings:` block — every setting, the git commit, host, date, `CUDA_VISIBLE_DEVICES`
+and the full command.
 
 Each run writes to `runs/.../NNNNN-<cfg>-gpus<G>-batch<B>[-desc]/` with `<runname>.log`,
 `stats.jsonl`, TensorBoard events, `reals.png` / `fakes<kimg>.png` grids, and — the single

@@ -5,6 +5,36 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+### Fixed
+- **`--fake-label-sampling uniform` also made the combra eval labels uniform.** The
+  fixed eval label set was drawn from the training `class_probs`, so a uniform run
+  scored a uniform class mix against a reference with the dataset's empirical mix.
+  Eval labels now always follow the reference's empirical class distribution through
+  one helper, `_combra_eval_labels`, shared with `styleswin-eval`, so both draw the
+  same labels for the same seed. Runs with the default `empirical` sampling are
+  unaffected (identical labels).
+- **A conditional zip without `class_names` got fabricated `['0', '1', ...]`.**
+  `ImageFolderDataset.class_names` fell back to string indices, which made the
+  launcher's refusal unreachable and stamped fabricated names into snapshots (and from
+  there into the h5). It now returns `None`, so `styleswin-train --cond True` refuses
+  such a zip (label contract, §5). Snapshots already written with `'0'`, `'1'`, ...
+  still load as if the names were real.
+- **A generation failure on one rank during the combra eval could hang the others.**
+  The eval shard was generated before `gather_generated`'s collectives with no
+  cross-rank agreement, so an OOM on one rank left the rest blocked in the gather.
+  Generation is now guarded and agreed through combra's `all_ranks_ok`; a failure
+  (or combra's own extraction handshake failing) raises on every rank and the tick
+  logs no metrics.
+- **The combra eval held the whole shard as fp32.** Each batch is now converted to
+  uint8 as it is generated, instead of concatenating the shard as fp32 on the GPU and
+  denormalizing it on the CPU with several full-size float temporaries (at 1024 px and
+  10k samples on 2 GPUs that was about 63 GB per rank of fp32 on each side). The uint8
+  output is byte-identical.
+- **`styleswin-eval` accepted `--data` at a different resolution than the
+  checkpoint.** It now refuses the mismatch. On a host without CUDA it warns that
+  its latents differ from the CUDA-generator latents training drew for the same
+  `--seed`, so the scores are not comparable with the training log.
+
 ## [0.5.0] - 2026-09-25
 
 ### Changed

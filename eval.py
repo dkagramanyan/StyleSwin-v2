@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from gen_images import _build_generator, _load_checkpoint
-from training.training_loop import _combra_eval_distributed, _combra_precompute_reference, _sample_labels
+from training.training_loop import _combra_eval_distributed, _combra_eval_labels, _combra_precompute_reference
 
 
 @click.command()
@@ -40,6 +40,9 @@ def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out)
     G = _build_generator(ckpt, n_classes, resolution, arch, device)
 
     ref_set = ImageFolderDataset(path=data, use_labels=(n_classes > 0), xflip=False)
+    if ref_set.resolution != resolution:
+        raise click.ClickException(
+            f'--data is {ref_set.resolution}px but the checkpoint generates {resolution}px images')
     n_ref = len(ref_set)
     if combra_ref_count and combra_ref_count < n_ref:
         ref_indices = np.sort(np.random.RandomState(seed).permutation(n_ref)[:combra_ref_count]).tolist()
@@ -49,14 +52,17 @@ def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out)
     if not ok:
         raise click.ClickException('combra reference precompute failed (see log above)')
 
+    if device.type != 'cuda':
+        # Training draws the eval latents from a CUDA generator; a CPU generator with the
+        # same seed yields different latents, so these scores are not comparable with the
+        # in-training combra metrics of the same seed.
+        print('Warning: no CUDA device -- the eval latents differ from the ones training '
+              'drew for the same --seed; metrics are not comparable with the training log.', flush=True)
     z = torch.randn([num_fid_samples, arch['style_dim']], device=device,
                     generator=torch.Generator(device=device).manual_seed(seed + 1))
     c = None
     if n_classes > 0:
-        raw = np.asarray(ref_set._get_raw_labels()).astype(np.int64)
-        probs = torch.tensor(np.bincount(raw, minlength=n_classes), dtype=torch.float32).clamp_min(1.0)
-        c = _sample_labels(probs, num_fid_samples, n_classes, device,
-                           generator=torch.Generator().manual_seed(seed))
+        c = _combra_eval_labels(ref_set, num_fid_samples, n_classes, device, seed)
 
     metrics = _combra_eval_distributed(G, z, c, batch_gpu, 1, 0, device, combra_ref)
     metrics = {k: float(v) for k, v in metrics.items()}

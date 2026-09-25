@@ -144,16 +144,19 @@ def _assert_norm_roundtrip(device):
 
 @torch.no_grad()
 def _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank):
+    # This rank's shard as uint8 NCHW. Each batch is denormalized as soon as it is
+    # generated, so neither the whole shard in fp32 on the GPU nor its float
+    # temporaries on the CPU ever exist at once (identical bytes: the denorm is per-pixel).
     n = grid_z.shape[0]
     idx = torch.arange(rank, n, num_gpus, device=grid_z.device)
     z = grid_z.index_select(0, idx)
     if grid_c is not None:
         c = grid_c.index_select(0, idx)
-        images = torch.cat([G_ema(zz, cc)[0]
-                            for zz, cc in zip(z.split(batch_gpu), c.split(batch_gpu))], dim=0)
+        images = [_denorm_to_uint8(G_ema(zz, cc)[0].cpu().numpy())
+                  for zz, cc in zip(z.split(batch_gpu), c.split(batch_gpu))]
     else:
-        images = torch.cat([G_ema(zz)[0] for zz in z.split(batch_gpu)], dim=0)
-    return images.cpu().numpy()
+        images = [_denorm_to_uint8(G_ema(zz)[0].cpu().numpy()) for zz in z.split(batch_gpu)]
+    return np.concatenate(images, axis=0)
 
 
 def _combra_precompute_reference(reference_u8_set, ref_indices, device, rank, num_gpus):
@@ -180,13 +183,25 @@ def _combra_precompute_reference(reference_u8_set, ref_indices, device, rank, nu
 
 
 def _combra_eval_distributed(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank, device, combra_ref):
-    """combra metrics on rank 0, None elsewhere. Every rank MUST call this: the
-    gathers inside are collectives, so a rank that skips them hangs the others."""
-    from combra.metrics.distributed import distributed_metrics, gather_generated
+    """combra metrics on rank 0, None elsewhere; raises on every rank when any rank's
+    generation or extraction failed. Every rank MUST call this: the gathers inside
+    are collectives, so a rank that skips them hangs the others."""
+    from combra.metrics.distributed import all_ranks_ok, distributed_metrics, gather_generated
 
-    local_u8 = _denorm_to_uint8(
-        _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank))
+    # Generation runs BEFORE gather_generated's collectives, so it needs its own
+    # handshake: an OOM on one rank would otherwise raise there while every other
+    # rank was already blocked in the gather. Every rank raises together instead.
+    local_u8, ok = None, True
+    try:
+        local_u8 = _combra_generate_local_shard(G_ema, grid_z, grid_c, batch_gpu, num_gpus, rank)
+    except Exception as e:  # noqa: BLE001 -- agreed across ranks below
+        ok = False
+        print(f'[combra][rank {rank}] generation failed: {e}', flush=True)
+    if not all_ranks_ok(ok, device, num_gpus):
+        raise RuntimeError('generation failed on at least one rank')
     gen_feats, gen_angles = gather_generated(local_u8, device, rank, num_gpus)
+    if gen_feats is None:  # combra's own handshake: (None, None) on every rank
+        raise RuntimeError('generated-image extraction failed on at least one rank')
     if rank != 0:
         return None
     # device= so the CMMD reduction runs where the features were extracted.
@@ -249,6 +264,15 @@ def build_stats_row(stats_dict, stats_metrics, timestamp, start_time):
 def _sample_labels(class_probs, n, n_classes, device, generator=None):
     idx = torch.multinomial(class_probs, n, replacement=True, generator=generator)
     return F.one_hot(idx, n_classes).float().to(device)
+
+
+def _combra_eval_labels(reference_u8_set, n, n_classes, device, seed):
+    """The fixed combra eval labels: the reference's empirical class mix, drawn from
+    --seed on the CPU. Shared by training and ``styleswin-eval`` so both score the
+    same label set, whatever --fake-label-sampling the training used."""
+    raw = np.asarray(reference_u8_set._get_raw_labels()).astype(np.int64)
+    probs = torch.tensor(np.bincount(raw, minlength=n_classes), dtype=torch.float32).clamp_min(1.0)
+    return _sample_labels(probs, n, n_classes, device, generator=torch.Generator().manual_seed(seed))
 
 #----------------------------------------------------------------------------
 
@@ -456,9 +480,9 @@ def training_loop(
         combra_z = torch.randn([num_fid_samples, style_dim], device=device,
                                generator=torch.Generator(device=device).manual_seed(random_seed + 1))
         if n_classes > 0:
-            gcpu = torch.Generator().manual_seed(random_seed)
-            probs = class_probs.cpu() if class_probs is not None else torch.ones(n_classes)
-            combra_c = _sample_labels(probs, num_fid_samples, n_classes, device, generator=gcpu)
+            # The reference's class mix, not class_probs: --fake-label-sampling uniform
+            # must not change the label set the metrics compare against the reference.
+            combra_c = _combra_eval_labels(reference_u8_set, num_fid_samples, n_classes, device, random_seed)
 
     # Fixed sample-grid latents (class-sorted, resolution-adaptive), seeded from --seed alone.
     grid_z, grid_c, grid_ncol = _make_grid_latents(resolution, n_classes, style_dim, random_seed, device)

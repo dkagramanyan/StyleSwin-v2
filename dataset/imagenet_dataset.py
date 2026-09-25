@@ -173,11 +173,12 @@ class Dataset(torch.utils.data.Dataset):
 
     @property
     def class_names(self):
-        # Grain-class names travelling with the artifact (Rule 2); falls back to string
-        # indices for a legacy zip that predates the class_names field.
+        # Grain-class names travelling with the artifact (Rule 2); None for a legacy zip
+        # that predates the class_names field. Never fabricated '0','1',...: those would
+        # pass the launcher's refusal and be stamped into snapshots as if they were real.
         if self._raw_class_names is None:
             names = self._load_raw_class_names() if self._use_labels else None
-            self._raw_class_names = list(names) if names else [str(i) for i in range(self.label_dim)]
+            self._raw_class_names = list(names) if names else None
         return self._raw_class_names
 
 #----------------------------------------------------------------------------

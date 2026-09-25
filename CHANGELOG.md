@@ -5,6 +5,8 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-09-25
+
 ### Fixed
 - **A scalar not reported this tick is left out of `stats.jsonl` and TensorBoard (§7).**
   The stats collector ran with `keep_previous=True`, which carries a name's previous

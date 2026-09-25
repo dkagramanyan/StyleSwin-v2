@@ -9,7 +9,7 @@ loop's helpers on the single-process path. Prints the metrics and, with ``--out`
 them as JSON.
 
     styleswin-eval --network run/styleswin-snapshot-000500-inference.pt \\
-        --data datasets/imagenet_9to4_orig_256x256.zip --num-fid-samples 10000
+        --data datasets/imagenet_9to4_1024x1024_256x256.zip --num-fid-samples 10000
 """
 
 import json

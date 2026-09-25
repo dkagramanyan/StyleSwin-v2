@@ -5,6 +5,15 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-25
+
+### Changed
+- **The training zips keep their original names.** The 1080-original-crop sets
+  introduced in 0.7.0 as `imagenet_9to4_orig_<r>x<r>.zip` are now named
+  `imagenet_9to4_1024x1024_<r>x<r>.zip`, the names the cluster already uses; the
+  old 8640-image zips of that name are deleted. The `sh/` scripts' default `DATA`
+  and the docs use that name again. No code or training behaviour changes.
+
 ## [0.7.0] - 2026-09-25
 
 ### Added

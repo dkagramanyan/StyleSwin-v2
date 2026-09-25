@@ -16,7 +16,7 @@ enable it; ``n_classes`` and ``class_names`` are read from the dataset's ``datas
 
 Example (single stage, conditional, 2 GPUs):
 
-    styleswin-train --outdir=./runs --data=./datasets/imagenet_9to4_orig_256x256.zip \\
+    styleswin-train --outdir=./runs --data=./datasets/imagenet_9to4_1024x1024_256x256.zip \\
         --gpus=2 --batch-gpu=16 --cond True --combra-metrics True \\
         --kimg 25000 --snap 50
 """

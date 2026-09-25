@@ -93,10 +93,10 @@ to RGB at build time:
 
 ```bash
 styleswin-prepare-data convert --source /path/to/wc_co_source \
-    --dest ./datasets/imagenet_9to4_orig_256x256.zip --transform center-crop --resolution 256x256
+    --dest ./datasets/imagenet_9to4_1024x1024_256x256.zip --transform center-crop --resolution 256x256
 ```
 
-The training sets are `imagenet_9to4_orig_<r>x<r>.zip` (r = 256, 512, 1024): **1080 unique
+The training sets are `imagenet_9to4_1024x1024_<r>x<r>.zip` (r = 256, 512, 1024): **1080 unique
 WC-Co crops**, 360 per class (`class_names` `['Ultra_Co25', 'Ultra_Co11', 'Ultra_Co6_2']`).
 They replace the earlier 8640-image archives, which stored each crop in all 8 dihedral
 orientations; that augmentation is now applied on the fly (`--augment`, see Training). One
@@ -110,7 +110,7 @@ shuffle is re-seeded per epoch.
 ```bash
 # conditional, 2 GPUs, combra metrics on every snapshot tick
 styleswin-train --outdir=./runs/wc-cv \
-    --cfg styleswin-256 --data=./datasets/imagenet_9to4_orig_256x256.zip \
+    --cfg styleswin-256 --data=./datasets/imagenet_9to4_1024x1024_256x256.zip \
     --gpus=2 --cond True --combra-metrics True --kimg 25000 --snap 50
 ```
 

@@ -34,6 +34,23 @@ REQUIRED = [
 combra_installed = importlib.util.find_spec("combra") is not None
 requires_combra = pytest.mark.skipif(not combra_installed, reason="combra is not installed")
 
+# The angle keys of each angle version (combra >= 0.25): four Wasserstein distances plus
+# the bimodal fit's relative errors -- two amplitudes for v1, one mass share `pi` for v2.
+_WASS = ("w1", "w2", "circular_w1", "circular_w2")
+ANGLE_KEYS = {
+    "v1": (*_WASS, "mu1", "mu2", "sigma1", "sigma2", "amp1", "amp2"),
+    "v2": (*_WASS, "mu1", "mu2", "sigma1", "sigma2", "pi"),
+}
+
+
+def _bimodal_angles(rng, mu1, sigma1, mu2, sigma2, n=4000, share=0.7):
+    # WC-Co vertex angles: a convex mode and a reflex one.
+    import numpy as np
+
+    k = int(n * share)
+    both = [rng.normal(mu1, sigma1, k), rng.normal(mu2, sigma2, n - k)]
+    return np.concatenate(both) % 360
+
 
 def test_combra_is_installed_when_required():
     """CI sets COMBRA_REQUIRED=1 once it has installed combra; from then on an
@@ -91,17 +108,65 @@ def test_angle_metrics_run_on_pooled_angles():
     # leaves the second Gaussian with nothing to sit on, so combra reports the
     # relative errors as nan rather than dividing by a phantom mode.
     rng = np.random.default_rng(0)
-
-    def angles(mu1, sigma1, mu2, sigma2, n=4000, share=0.7):
-        k = int(n * share)
-        both = [rng.normal(mu1, sigma1, k), rng.normal(mu2, sigma2, n - k)]
-        return np.concatenate(both) % 360
-
     out = angle_density_metrics_from_pooled(
-        angles(100, 20, 240, 25), angles(104, 21, 236, 26)
+        _bimodal_angles(rng, 100, 20, 240, 25), _bimodal_angles(rng, 104, 21, 236, 26)
     )
-    for key in ("w1", "w2", "circular_w1", "circular_w2", "mu1", "sigma1", "pi"):
+    for key in ANGLE_KEYS["v1"]:
         assert np.isfinite(out[key]), f"{key} is not finite"
+
+
+@requires_combra
+def test_distributed_metrics_keys_map_to_three_sections():
+    # The real combra key set, through the one key -> tag mapping every sink uses:
+    # image metrics under Metrics/, each angle version under its own Metrics_vN/.
+    import numpy as np
+    pytest.importorskip("torch")
+    from combra.metrics.distributed import distributed_metrics
+
+    from training.training_loop import build_stats_row, metric_tag, metrics_log_lines
+
+    rng = np.random.default_rng(0)
+
+    def side():
+        angles = {m: _bimodal_angles(rng, 100, 20, 240, 25) for m in ("v1", "v2")}
+        feat = {n: rng.normal(size=(8, 4)).astype(np.float32) for n in ("fid", "cmmd", "fd_dinov2")}
+        return angles, feat
+
+    (ref_angles, ref_feat), (gen_angles, gen_feat) = side(), side()
+    out = distributed_metrics({"angles": ref_angles, "feat": ref_feat}, gen_angles, gen_feat, device="cpu")
+    # As the training loop builds its row.
+    stats_metrics = {f"combra_{k}": float(v) for k, v in out.items()}
+    stats_metrics["combra_num_fid_samples"] = 64.0
+    stats_metrics["combra_fid_best"] = stats_metrics["combra_fid"]
+
+    sections = {}
+    for name in stats_metrics:
+        section, key = metric_tag(name).split("/")
+        sections.setdefault(section, []).append(key)
+    assert sections == {
+        "Metrics": ["combra_fid", "combra_cmmd", "combra_fd_dinov2", "combra_num_fid_samples", "combra_fid_best"],
+        **{f"Metrics_{m}": [f"combra_{k}" for k in keys] for m, keys in ANGLE_KEYS.items()},
+    }
+
+    row = build_stats_row({}, stats_metrics, 1000.0, 900.0)
+    assert {k for k in row if "/" in k} == {metric_tag(n) for n in stats_metrics}
+
+    lines = metrics_log_lines(stats_metrics)
+    assert [line.split(": ")[0] for line in lines] == ["Metrics", "Metrics v1", "Metrics v2"]
+    assert lines[0].startswith("Metrics: combra_fid ") and "combra_fid_best" in lines[0]
+    for line, (m, keys) in zip(lines[1:], ANGLE_KEYS.items()):
+        assert line.startswith(f"Metrics {m}: combra_w1 ")
+        assert line.endswith(f"combra_{keys[-1]} {out[f'{m}_{keys[-1]}']:.4f}")
+
+
+def test_startup_header_records_combra_version():
+    pytest.importorskip("torch")
+    from training.training_loop import _startup_header
+
+    # A walltime-killed run never reaches the end-of-run HPARAMS, so the startup line is
+    # its only record of which combra (angle method) produced its numbers.
+    expected = importlib.import_module("combra").__version__ if combra_installed else "not installed"
+    assert f"combra {expected}" in _startup_header(1).split(" | ")
 
 
 @pytest.mark.parametrize("conditional", [False, True])

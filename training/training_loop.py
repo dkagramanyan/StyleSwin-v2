@@ -15,7 +15,9 @@ machinery follows the cross-model contract:
   combra_fid / combra_fd_dinov2 / combra_cmmd (never pruned). No resume, no rolling
   ``latest``, no ``best_model.*``;
 * combra generative-quality metrics each snapshot tick, sharded across ranks, mirrored
-  into both TensorBoard (``Metrics/combra_*``) and ``stats.jsonl``;
+  into TensorBoard, ``stats.jsonl`` and the run log under one key per scalar
+  (:func:`metric_tag`): the image metrics under ``Metrics/combra_*``, the angle metrics
+  of each angle version under ``Metrics_v1/combra_*`` and ``Metrics_v2/combra_*``;
 * the **normalization contract (§5)**: uint8 at every boundary, one normalize/denormalize
   pair (ImageNet mean/std) asserted to round-trip. ``--augment`` applies a random dihedral
   transform (rot90 x flip) to each raw uint8 training item in the loader; the combra
@@ -25,8 +27,10 @@ machinery follows the cross-model contract:
 import glob
 import importlib.util
 import json
+import logging
 import math
 import os
+import re
 import time
 from datetime import datetime
 
@@ -312,12 +316,52 @@ def build_stats_row(stats_dict, stats_metrics, timestamp, start_time):
     if 'Progress/tick' in row:
         row['Progress/tick'] = int(row['Progress/tick'])
     for name, value in stats_metrics.items():
-        row[f'Metrics/{name}'] = float(value)
+        row[metric_tag(name)] = float(value)
     row = {k: None if isinstance(v, float) and not math.isfinite(v) else v for k, v in row.items()}
     row['timestamp'] = timestamp
     row['wall_time'] = timestamp - start_time
     row['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     return row
+
+
+def metric_tag(name):
+    """The stats.jsonl key / TensorBoard tag of one combra scalar (§7), for every sink.
+
+    ``combra_v1_w1`` -> ``Metrics_v1/combra_w1``: each angle version's metrics get
+    their own section (combra >= 0.25 prefixes them ``v1_`` / ``v2_``). Everything else
+    -- ``combra_fid``, ``combra_cmmd``, ``combra_fd_dinov2``, ``combra_num_fid_samples``,
+    ``combra_fid_best`` -- stays ``Metrics/<name>``, which ``load_fid_by_kimg`` reads.
+    """
+    m = re.fullmatch(r'combra_(v\d+)_(.+)', name)
+    return f'Metrics_{m[1]}/combra_{m[2]}' if m else f'Metrics/{name}'
+
+
+def metrics_log_lines(stats_metrics):
+    """The run-log lines of one eval: ``Metrics: ...`` (image metrics, sample count,
+    best FID), then ``Metrics v1: ...`` and ``Metrics v2: ...``, keyed by the tag's
+    last component."""
+    sections = {}
+    for name, value in stats_metrics.items():
+        section, key = metric_tag(name).split('/')
+        sections.setdefault(section, []).append(f'{key} {value:.4f}')
+    return [section.replace('_', ' ') + ': ' + '  '.join(parts)
+            for section, parts in sorted(sections.items(), key=lambda s: s[0] != 'Metrics')]
+
+
+def log_python_warnings():
+    """Send Python-logging warnings (combra's: why a metric is nan, why a precompute
+    failed) to ``sys.stderr`` -- the run Logger on rank 0, so they get its ``[ts]`` prefix.
+
+    combra attaches a NullHandler and never configures logging, so without a root
+    handler its warnings were dropped -- until open_clip's first module-level
+    ``logging.info`` happened to call ``basicConfig()`` when CLIP loaded. A warning
+    raised before that (an angle-extraction failure in the reference precompute) was lost.
+    Same format as that accidental ``basicConfig()`` (``WARNING:combra...:message``).
+    """
+    handler = logging.StreamHandler()  # binds the current sys.stderr
+    handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+    logging.getLogger().addHandler(handler)
+    return handler
 
 
 def _sample_labels(class_probs, n, n_classes, device, generator=None):
@@ -335,8 +379,19 @@ def _combra_eval_labels(reference_u8_set, n, n_classes, device, seed):
 
 #----------------------------------------------------------------------------
 
+def _combra_version():
+    try:
+        import combra
+        return combra.__version__
+    except ImportError:
+        return 'not installed'
+
+
 def _startup_header(num_gpus):
-    parts = [f'torch {torch.__version__}', f'cuda {torch.version.cuda}', f'gpus {num_gpus}']
+    # The combra version says which angle method produced a run's numbers; the end-of-run
+    # HPARAMS also records it, but a walltime-killed run never writes those.
+    parts = [f'torch {torch.__version__}', f'cuda {torch.version.cuda}', f'combra {_combra_version()}',
+             f'gpus {num_gpus}']
     try:
         parts.append('device ' + torch.cuda.get_device_name(0))
     except Exception:
@@ -528,6 +583,9 @@ def training_loop(
             ref_indices = list(range(n_ref))
         combra_ref, combra_ref_ok = _combra_precompute_reference(
             reference_u8_set, ref_indices, device, rank, num_gpus, dihedral=augment)
+        if not combra_ref_ok and rank == 0:
+            print('[combra] reference precompute failed (see above) -- combra metrics are DISABLED '
+                  'for this run: no Metrics lines, no best-snapshot protection.', flush=True)
     if combra_metrics and (rank == 0) and not combra_installed:
         print("Warning: combra_metrics=True but the `combra` package is not installed -- "
               "combra metrics will be skipped. Install it (`pip install -e '.[combra]'`) to "
@@ -748,8 +806,8 @@ def training_loop(
                     if 'combra_fid' in stats_metrics:
                         best_fid = min(best_fid, stats_metrics['combra_fid'])
                         stats_metrics['combra_fid_best'] = best_fid
-                    print('Metrics: ' + '  '.join(
-                        f'{k} {v:.4f}' for k, v in stats_metrics.items()), flush=True)
+                    for line in metrics_log_lines(stats_metrics):
+                        print(line, flush=True)
 
             if rank == 0:
                 grid = _render_fakes_grid(g_ema, grid_z, grid_c, grid_ncol, batch_gpu, n_classes, device)
@@ -766,9 +824,12 @@ def training_loop(
                     'g_ema': g_ema.state_dict(),
                     'n_classes': n_classes, 'resolution': resolution,
                     'class_names': class_names, 'cur_nimg': cur_nimg, 'arch': arch,
-                    # styleswin-eval reads these to build the same combra reference and
-                    # draw the same eval latents / labels / reference subset.
+                    # styleswin-eval reads these to build the same combra reference,
+                    # draw the same eval latents / labels / reference subset and run
+                    # with the same TF32 / cuDNN settings and generation batch.
                     'augment': augment, 'seed': random_seed,
+                    'num_fid_samples': num_fid_samples, 'combra_ref_count': combra_ref_count,
+                    'tf32': tf32, 'bench': bench, 'batch_gpu': batch_gpu,
                 }
                 snapshot_name = f'styleswin-snapshot-{cur_nimg//1000:06d}-inference.pt'
                 _atomic_save(snapshot_data, os.path.join(run_dir, snapshot_name), run_dir)
@@ -803,7 +864,7 @@ def training_loop(
                     stats_tfevents.add_scalar(name, value.mean, global_step=gstep)
             for name, value in stats_metrics.items():
                 if math.isfinite(value):
-                    stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=gstep)
+                    stats_tfevents.add_scalar(metric_tag(name), value, global_step=gstep)
             stats_tfevents.flush()
 
         cur_tick += 1

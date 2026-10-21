@@ -5,6 +5,56 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-22
+
+### Changed
+- **combra pinned to v0.25.0: two angle sections + one image section in every sink.**
+  combra 0.25 extracts the vertex angles with both methods (v1 = P0, `min_segment_len` 5;
+  v2 = P6) and returns `v1_<key>` / `v2_<key>` next to the unprefixed `fid` / `cmmd` /
+  `fd_dinov2`: ten v1 keys (`w1`, `w2`, `circular_w1`, `circular_w2`, `mu1`, `mu2`,
+  `sigma1`, `sigma2`, `amp1`, `amp2`) and nine v2 keys (the same up to `sigma2`, then
+  `pi`, the mass-share fit of v2 only). One mapping (`metric_tag`) now
+  names each scalar for `stats.jsonl`, TensorBoard and the run log: `vN_<k>` ->
+  `Metrics_vN/combra_<k>` (TensorBoard sections `Metrics_v1` / `Metrics_v2`), and
+  `fid`, `cmmd`, `fd_dinov2`, `num_fid_samples`, `fid_best` -> `Metrics/combra_<k>`
+  (unchanged, so `combra.metrics.load_fid_by_kimg` keeps working). Non-finite values stay
+  `null` in `stats.jsonl` and are skipped in TensorBoard. Best-snapshot selection still
+  uses only `combra_fid` / `combra_fd_dinov2` / `combra_cmmd`.
+- **The run log's single `Metrics:` line is three lines:** `Metrics: combra_fid …
+  combra_cmmd … combra_fd_dinov2 … combra_num_fid_samples … combra_fid_best …`, then
+  `Metrics v1: combra_w1 … combra_amp2 …` and `Metrics v2: combra_w1 … combra_pi …`,
+  same number format.
+- **The `[startup]` line records the combra version** (`combra 0.25.0`). It was otherwise
+  written only into the end-of-run HPARAMS, so a walltime-killed run had no record of
+  which angle method produced its numbers.
+- **Snapshots also store `num_fid_samples`, `combra_ref_count`, `tf32`, `bench` and
+  `batch_gpu`**, for `styleswin-eval`.
+- CI installs the combra tag pinned in `pyproject.toml` (it installed unpinned combra
+  main whenever `COMBRA_TOKEN` was set).
+
+### Fixed
+- **`styleswin-eval` reproduces the training metrics.** It writes the same three sections
+  under the same keys as `stats.jsonl`, as **strict JSON** (`nan` -> `null`; stdout and
+  `--out` carried bare `NaN` tokens). It now restores `--num-fid-samples`,
+  `--combra-ref-count` and `--batch-gpu` from the snapshot (a capped run was scored with
+  10 000 fakes against the whole set, and eval generated in batches of 32 whatever the
+  training batch: the batch changes the generated images, which moved a batch-4 run's v2
+  angle metrics by ~6%), and applies the training `--tf32` / `--bench` settings, which
+  training sets globally and eval left at torch's defaults. An explicit flag still wins;
+  snapshots older than 0.8.0 fall back to the old defaults (10 000, 0, 32) and the training
+  defaults (TF32 and cuDNN benchmark on). On the 1-GPU smoke run eval now reproduces every
+  angle metric bit for bit; FID / CMMD / FD-DINOv2 agree to ~5e-5 relative, which is the
+  backbones' run-to-run GPU nondeterminism (two evals of one snapshot differ as much).
+- **combra's Python-logging warnings reach the run log** with the `[ts]` prefix. combra
+  attaches only a `NullHandler`, so its warnings (why a metric is `nan`, why the reference
+  precompute failed) were dropped unless open_clip had already called `basicConfig()` by
+  loading CLIP -- a warning raised before that was lost. Training and eval now install a
+  root handler on `sys.stderr` (the run Logger on rank 0), same format as before.
+- **A failed reference precompute is logged.** It disabled combra metrics for the whole
+  run with no line of its own; the log now says so once at startup.
+- `tests/test_combra_contract.py` asserted v0.19.1's unprefixed key set; it now checks the
+  v1 / v2 key sets and that the real `distributed_metrics` keys map to the three sections.
+
 ## [0.7.4] - 2026-09-25
 
 ### Changed

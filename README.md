@@ -176,17 +176,52 @@ stages) to fit the job's time limit.
 With `--combra-metrics` (default), every snapshot tick scores `G_ema` against the whole training
 set — **sharded across ranks**: each rank generates its slice of a fixed `--num-fid-samples`
 (default 10 000) sample and extracts FID / CMMD / FD-DINOv2 features + pooled vertex angles,
-gathered to rank 0 for the distances. Results are logged to TensorBoard **and** `stats.jsonl`
-under `Metrics/combra_*` — `combra_fid`, `combra_cmmd`, `combra_fd_dinov2`,
-`combra_fid_best`, the angle-density metrics, and `combra_num_fid_samples` recording the
-sample count the run actually used. (Keys used to carry a literal `10k` suffix that never
-tracked `--num-fid-samples`; they no longer do.) `styleswin-eval` scores a checkpoint
-standalone and reproduces the training metrics: it reads the `augment` flag recorded in the
-snapshot and builds the reference with the same `dihedral` setting (snapshots without the
-flag predate `--augment` and were trained without it, so they get `dihedral=False`). It
-also defaults `--seed` to the training `--seed` stored in the snapshot (0 for snapshots
-that predate the key), since the eval latents, labels and capped reference subset derive
-from it. The eval labels follow the reference's class mix (360 / 360 / 360 on the current archives). combra is optional; if missing, training warns at startup and continues.
+gathered to rank 0 for the distances. combra (≥ 0.25) extracts the vertex angles with two
+methods, so a run reports **three sections**, under the same key in all three sinks
+(`stats.jsonl` key = TensorBoard tag; the `.log` line uses the part after the `/`):
+
+| Section | Keys | What |
+|---|---|---|
+| `Metrics/` | `combra_fid`, `combra_cmmd`, `combra_fd_dinov2`, `combra_num_fid_samples`, `combra_fid_best` | image-feature metrics (independent of the angle method), the sample count the run actually used, and the running best FID |
+| `Metrics_v1/` | `combra_w1`, `combra_w2`, `combra_circular_w1`, `combra_circular_w2`, `combra_mu1`, `combra_mu2`, `combra_sigma1`, `combra_sigma2`, `combra_amp1`, `combra_amp2` | angle-density metrics of the v1 angles (P0): four Wasserstein distances + relative errors of the two-amplitude bimodal fit |
+| `Metrics_v2/` | `combra_w1`, `combra_w2`, `combra_circular_w1`, `combra_circular_w2`, `combra_mu1`, `combra_mu2`, `combra_sigma1`, `combra_sigma2`, `combra_pi` | angle-density metrics of the v2 angles (P6): the same four distances + relative errors of the mass-share fit (`combra_pi`: mode 1's mass share) |
+
+So `stats.jsonl` carries e.g. `"Metrics/combra_fid"` (which `combra.metrics.load_fid_by_kimg`
+reads) and `"Metrics_v1/combra_w1"`; non-finite values are `null` there and skipped in
+TensorBoard. The run log gets three lines per eval, in this order:
+
+```
+[ts] Metrics: combra_fid … combra_cmmd … combra_fd_dinov2 … combra_num_fid_samples … combra_fid_best …
+[ts] Metrics v1: combra_w1 … combra_w2 … … combra_amp2 …
+[ts] Metrics v2: combra_w1 … … combra_sigma2 … combra_pi …
+```
+
+combra's own warnings (e.g. why the angle keys are `nan`: no vertices extracted from an
+early generator) go through Python logging and land in the run log as
+`[ts] WARNING:combra...`. The `[startup]` line records the combra version, so even a run
+killed by the walltime says which angle methods produced its numbers. If the reference
+precompute fails, the log says once that combra metrics are disabled for the run.
+(Keys used to carry a literal `10k` suffix that never tracked `--num-fid-samples`; they no
+longer do.)
+
+`styleswin-eval` scores a checkpoint standalone and reproduces the training metrics: it
+prints (and with `--out` writes) **strict JSON** (`nan` → `null`) under the same
+`Metrics/…`, `Metrics_v1/…`, `Metrics_v2/…` keys as `stats.jsonl` (`combra_fid_best`
+aside, a running value of the training run). It restores from the snapshot what the
+numbers depend on: the `augment` flag (the reference is built with the same `dihedral`
+setting; snapshots without the flag predate `--augment` and get `dihedral=False`), the
+training `--seed` (0 for snapshots without it), since the eval latents, labels and capped
+reference subset derive from it, `--num-fid-samples`, `--combra-ref-count` and
+`--batch-gpu` (snapshots from v0.8.0 on; older ones fall back to 10 000, 0 and 32 — the
+generation batch changes the generated images, so a different one moves every metric), and
+the training `--tf32` / `--bench` settings, which training applies globally (older
+snapshots get the training defaults, both on). An explicit flag still overrides the stored
+value. With these restored, a 1-GPU run's angle metrics are reproduced bit for bit; the
+image metrics agree to ~1e-5 relative, which is their run-to-run spread (the feature
+backbones on the GPU are not bit-deterministic; two evals of one snapshot differ as much). A multi-GPU run generates per-rank
+shards, whose last partial batches differ from eval's single-process batches, so a few
+images may differ there. The eval labels follow
+the reference's class mix (360 / 360 / 360 on the current archives). combra is optional; if missing, training warns at startup and continues.
 
 ## Generation
 

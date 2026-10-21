@@ -93,6 +93,9 @@ def subprocess_fn(rank, c, temp_dir):
         log_name = os.path.basename(c.run_dir) + '.log'
         logger = dnnlib.util.Logger(file_name=os.path.join(c.run_dir, log_name), file_mode='a', should_flush=True)
         _print_options(c)
+    # After the Logger: the handler binds sys.stderr, so rank 0's Python-logging warnings
+    # (combra's) land in the run log with the [ts] prefix.
+    training_loop.log_python_warnings()
 
     if c.num_gpus > 1:
         init_file = os.path.abspath(os.path.join(temp_dir, '.torch_distributed_init'))

@@ -5,37 +5,51 @@
 
 Scores a checkpoint's ``g_ema`` against a dataset with the same sharded combra split-API
 metrics used during training (angle-density + fid / cmmd / fd_dinov2), reusing the training
-loop's helpers on the single-process path. Prints the metrics and, with ``--out``, writes
-them as JSON.
+loop's helpers on the single-process path. Prints the metrics as strict JSON (non-finite
+-> null) under the same keys as ``stats.jsonl`` (``Metrics/combra_*`` for the image metrics,
+``Metrics_v1/combra_*`` / ``Metrics_v2/combra_*`` for the two angle versions) and, with
+``--out``, writes the same JSON to a file. The seed, sample count, reference cap, dihedral
+reference, generation batch and TF32 / cuDNN settings are restored from the snapshot, so a training run's
+logged metrics are reproduced.
 
     styleswin-eval --network run/styleswin-snapshot-000500-inference.pt \\
         --data datasets/imagenet_9to4_1024x1024_256x256.zip --num-fid-samples 10000
 """
 
 import json
+import math
 
 import click
 import numpy as np
 import torch
 
 from gen_images import _build_generator, _load_checkpoint
-from training.training_loop import _combra_eval_distributed, _combra_eval_labels, _combra_precompute_reference
+from training.training_loop import (
+    _combra_eval_distributed,
+    _combra_eval_labels,
+    _combra_precompute_reference,
+    log_python_warnings,
+    metric_tag,
+)
 
 
 @click.command()
 @click.option('--network', help='Checkpoint .pt (with g_ema)', metavar='PATH', required=True)
 @click.option('--data', help='Reference dataset (ImageNet-style zip/dir)', metavar='[ZIP|DIR]', required=True)
-@click.option('--num-fid-samples', help='Fakes generated for the image metrics', type=click.IntRange(min=1),
-              default=10000, show_default=True)
-@click.option('--combra-ref-count', help='Cap the reference to a seeded random subset (0 = whole set)',
-              type=click.IntRange(min=0), default=0, show_default=True)
-@click.option('--batch-gpu', help='Batch size per forward', type=click.IntRange(min=1), default=32, show_default=True)
+@click.option('--num-fid-samples', help='Fakes generated for the image metrics  [default: the training '
+              '--num-fid-samples stored in the snapshot, else 10000]', type=click.IntRange(min=1), default=None)
+@click.option('--combra-ref-count', help='Cap the reference to a seeded random subset (0 = whole set)  '
+              '[default: the training --combra-ref-count stored in the snapshot, else 0]',
+              type=click.IntRange(min=0), default=None)
+@click.option('--batch-gpu', help='Batch size per forward  [default: the training --batch-gpu stored in the snapshot, '
+              'else 32]', type=click.IntRange(min=1), default=None)
 @click.option('--seed', help='Seed for the eval latents / reference subset  [default: the training --seed stored '
               'in the snapshot, else 0]', type=int, default=None)
 @click.option('--out', help='Optional path to write the metrics JSON', metavar='PATH', default=None)
 def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out):
     from dataset.imagenet_dataset import ImageFolderDataset
 
+    log_python_warnings()  # combra's warnings (why a metric is nan) to stderr
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ckpt, n_classes, resolution, class_names, arch = _load_checkpoint(network)
     if seed is None:
@@ -43,6 +57,24 @@ def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out)
         # seed, so the training --seed is what reproduces the logged metrics. Snapshots
         # without the key predate it.
         seed = int(ckpt.get('seed', 0))
+    # The sample count and the reference cap change every metric as much as the seed
+    # does, so a capped training run is reproduced only with its own values. Snapshots
+    # without the keys predate them and get the old CLI defaults.
+    if num_fid_samples is None:
+        num_fid_samples = int(ckpt.get('num_fid_samples', 10000))
+    if combra_ref_count is None:
+        combra_ref_count = int(ckpt.get('combra_ref_count', 0))
+    # The generation batch changes the images themselves (the kernels G_ema runs depend
+    # on the batch shape): at batch 32 a batch-4 run's angle metrics moved by ~6%.
+    if batch_gpu is None:
+        batch_gpu = int(ckpt.get('batch_gpu', 32))
+    # Training sets these globally (--tf32 / --bench), so G_ema and the feature backbones
+    # ran under them; without them the image metrics drift from the training log.
+    # Snapshots without the keys get the training defaults (True / True).
+    tf32 = bool(ckpt.get('tf32', True))
+    torch.backends.cuda.matmul.allow_tf32 = tf32
+    torch.backends.cudnn.allow_tf32 = tf32
+    torch.backends.cudnn.benchmark = bool(ckpt.get('bench', True))
     G = _build_generator(ckpt, n_classes, resolution, arch, device)
 
     ref_set = ImageFolderDataset(path=data, use_labels=(n_classes > 0))
@@ -75,11 +107,17 @@ def main(network, data, num_fid_samples, combra_ref_count, batch_gpu, seed, out)
         c = _combra_eval_labels(ref_set, num_fid_samples, n_classes, device, seed)
 
     metrics = _combra_eval_distributed(G, z, c, batch_gpu, 1, 0, device, combra_ref)
-    metrics = {k: float(v) for k, v in metrics.items()}
-    print(json.dumps(metrics, indent=2))
+    # The keys training writes to stats.jsonl (fid_best aside, which is a running value
+    # of the training run), image metrics first; nan -> null keeps the JSON strict.
+    metrics = {f'combra_{k}': float(v) for k, v in metrics.items()}
+    metrics['combra_num_fid_samples'] = float(num_fid_samples)
+    tags = sorted(metrics, key=lambda k: not metric_tag(k).startswith('Metrics/'))
+    row = {metric_tag(k): metrics[k] if math.isfinite(metrics[k]) else None for k in tags}
+    text = json.dumps(row, indent=2, allow_nan=False)
+    print(text)
     if out is not None:
         with open(out, 'w') as f:
-            json.dump(metrics, f, indent=2)
+            f.write(text + '\n')
 
 
 if __name__ == '__main__':

@@ -38,12 +38,16 @@ jobs:
       # becomes a test FAILURE rather than a skip; without the secret the contract
       # test still skips, so a fork's PR keeps building. Base `combra` is enough:
       # CI never runs the image metrics, so the [metrics] extra is not needed here.
+      # The tag is read from the pyproject pin, so CI tests the combra a fresh install
+      # gets rather than whatever combra main is that day.
       - name: Install combra (arms tests/test_combra_contract.py)
         env:
           COMBRA_TOKEN: ${{ secrets.COMBRA_TOKEN }}
         run: |
           if [ -n "$COMBRA_TOKEN" ]; then
-            pip install "combra @ git+https://x-access-token:${COMBRA_TOKEN}@github.com/dkagramanyan/combra.git"
+            ref=$(grep -oP 'combra\.git@\K[^"]+' pyproject.toml)
+            echo "combra pinned in pyproject.toml: $ref"
+            pip install "combra @ git+https://x-access-token:${COMBRA_TOKEN}@github.com/dkagramanyan/combra.git@${ref}"
             echo "COMBRA_REQUIRED=1" >> "$GITHUB_ENV"
           else
             echo "COMBRA_TOKEN not set -- the combra contract test will skip."

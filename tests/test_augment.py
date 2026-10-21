@@ -26,6 +26,21 @@ class _FakeSet:
         return self.images[idx].copy(), self.labels[idx].copy()
 
 
+@pytest.fixture
+def eval_mod(monkeypatch):
+    """eval.py with its process-global side effects (a root logging handler, the
+    TF32 / cuDNN flags) kept out of the test process."""
+    import torch
+
+    import eval as eval_mod
+
+    monkeypatch.setattr(eval_mod, 'log_python_warnings', lambda: None)
+    for mod, name in ((torch.backends.cuda.matmul, 'allow_tf32'), (torch.backends.cudnn, 'allow_tf32'),
+                      (torch.backends.cudnn, 'benchmark')):
+        monkeypatch.setattr(mod, name, getattr(mod, name))
+    return eval_mod
+
+
 def _d4(image):
     """The 8 dihedral transforms of a CHW image, written independently of _dihedral."""
     out = []
@@ -126,11 +141,10 @@ def test_reference_call_passes_dihedral(monkeypatch, dihedral):
 @pytest.mark.parametrize('stored, expected', [({'augment': True}, True),
                                               ({'augment': False}, False),
                                               ({}, False)])  # pre---augment snapshot
-def test_eval_reads_augment_from_snapshot(monkeypatch, tmp_path, stored, expected):
+def test_eval_reads_augment_from_snapshot(monkeypatch, tmp_path, eval_mod, stored, expected):
     from click.testing import CliRunner
 
     import dataset.imagenet_dataset
-    import eval as eval_mod
 
     ckpt = dict(stored, n_classes=3, resolution=5)
     arch = dict(style_dim=4)
@@ -165,12 +179,11 @@ def test_eval_reads_augment_from_snapshot(monkeypatch, tmp_path, stored, expecte
 @pytest.mark.parametrize('stored, argv, expected', [({'seed': 42}, [], 42),
                                                     ({}, [], 0),  # pre-seed snapshot
                                                     ({'seed': 42}, ['--seed', '7'], 7)])
-def test_eval_seed_defaults_to_snapshot(monkeypatch, tmp_path, stored, argv, expected):
+def test_eval_seed_defaults_to_snapshot(monkeypatch, tmp_path, eval_mod, stored, argv, expected):
     # The capped reference subset is seed-derived, so it shows which seed eval used.
     from click.testing import CliRunner
 
     import dataset.imagenet_dataset
-    import eval as eval_mod
 
     ckpt = dict(stored, n_classes=3, resolution=5)
     seen = {}
@@ -199,6 +212,73 @@ def test_eval_seed_defaults_to_snapshot(monkeypatch, tmp_path, stored, argv, exp
                                            '--num-fid-samples', '6', '--combra-ref-count', '3'] + argv)
     assert r.exit_code == 0, r.output
     assert seen['ref_indices'] == np.sort(np.random.RandomState(expected).permutation(6)[:3]).tolist()
+
+
+_STORED = dict(num_fid_samples=6, combra_ref_count=3, tf32=False, bench=False, batch_gpu=2)
+
+
+@pytest.mark.parametrize('stored, argv, n_fake, ref_count, tf32, batch', [
+    (_STORED, [], 6, 3, False, 2),
+    (_STORED, ['--num-fid-samples', '5', '--combra-ref-count', '0', '--batch-gpu', '3'], 5, 0, False, 3),
+    ({}, ['--num-fid-samples', '6'], 6, 0, True, 32),  # pre-0.8 snapshot: old CLI / training defaults
+])
+def test_eval_restores_training_options(monkeypatch, tmp_path, eval_mod, stored, argv, n_fake, ref_count, tf32,
+                                        batch):
+    # A capped training run is reproduced only with its own sample count, reference cap,
+    # generation batch and TF32 / cuDNN settings; the output carries the three stats.jsonl sections as
+    # strict JSON (nan -> null).
+    import json
+
+    import torch
+    from click.testing import CliRunner
+
+    import dataset.imagenet_dataset
+
+    ckpt = dict(stored, n_classes=3, resolution=5, seed=42)
+    seen = {}
+
+    class _RefSet(_FakeSet):
+        resolution = 5
+
+        def __init__(self, path, use_labels):
+            super().__init__(n=6)
+
+        def _get_raw_labels(self):
+            return np.array([0, 1, 2, 0, 1, 2])
+
+    def fake_ref(ref_set, ref_indices, device, rank, n, dihedral):
+        seen['ref_indices'] = ref_indices
+        return {}, True
+
+    def fake_eval(G, z, c, batch_gpu, *a):
+        seen['n_fake'], seen['batch'] = z.shape[0], batch_gpu
+        seen['tf32'] = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
+        seen['bench'] = torch.backends.cudnn.benchmark
+        return {'v1_w1': float('nan'), 'v2_w1': 0.5, 'fid': 1.0, 'cmmd': 2.0, 'fd_dinov2': 3.0}
+
+    monkeypatch.setattr(eval_mod, '_load_checkpoint', lambda p: (ckpt, 3, 5, ['a', 'b', 'c'], dict(style_dim=4)))
+    monkeypatch.setattr(eval_mod, '_build_generator', lambda *a: None)
+    monkeypatch.setattr(dataset.imagenet_dataset, 'ImageFolderDataset', _RefSet)
+    monkeypatch.setattr(eval_mod, '_combra_precompute_reference', fake_ref)
+    monkeypatch.setattr(eval_mod, '_combra_eval_distributed', fake_eval)
+    monkeypatch.setattr(eval_mod.torch.cuda, 'is_available', lambda: False)
+
+    out = tmp_path / 'metrics.json'
+    r = CliRunner().invoke(eval_mod.main, ['--network', 'x.pt', '--data', str(tmp_path), '--out', str(out)] + argv)
+    assert r.exit_code == 0, r.output
+    assert seen['n_fake'] == n_fake and seen['batch'] == batch
+    expected_ref = np.sort(np.random.RandomState(42).permutation(6)[:ref_count]).tolist() if ref_count else list(range(6))
+    assert seen['ref_indices'] == expected_ref
+    assert seen['tf32'] == (tf32, tf32) and seen['bench'] is tf32
+
+    def strict(token):
+        raise AssertionError(f'non-strict JSON token {token}')
+
+    got = json.loads(out.read_text(), parse_constant=strict)
+    assert list(got) == ['Metrics/combra_fid', 'Metrics/combra_cmmd', 'Metrics/combra_fd_dinov2',
+                         'Metrics/combra_num_fid_samples', 'Metrics_v1/combra_w1', 'Metrics_v2/combra_w1']
+    assert got['Metrics_v1/combra_w1'] is None and got['Metrics/combra_num_fid_samples'] == n_fake
+    assert 'NaN' not in r.output
 
 
 def test_combra_precompute_reference_accepts_dihedral():

@@ -79,3 +79,35 @@ def test_hyperparameters_are_recorded(source):
     # Without this the HPARAMS tab is empty and two runs can be compared by their
     # curves but not by the configuration that produced them.
     assert "_write_run_hparams" in source
+
+
+def test_combra_warnings_reach_the_run_log(tmp_path):
+    # combra logs why a metric is nan through Python logging and attaches only a
+    # NullHandler; without a root handler of our own those warnings were dropped until
+    # open_clip happened to call basicConfig(). They must land in the run log, with the
+    # Logger's [ts] prefix.
+    pytest.importorskip("torch")  # the training-loop module imports torch at module level
+    import logging
+    import re
+
+    import dnnlib
+    from training.training_loop import log_python_warnings
+
+    log = tmp_path / "run.log"
+    run_logger = dnnlib.util.Logger(file_name=str(log), file_mode="a", should_flush=True)
+    try:
+        handler = log_python_warnings()
+        try:
+            logging.getLogger("combra.metrics.distributed").warning("v1 angle metrics are undefined")
+        finally:
+            logging.getLogger().removeHandler(handler)
+    finally:
+        run_logger.close()
+    assert re.fullmatch(r"\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] "
+                        r"WARNING:combra\.metrics\.distributed:v1 angle metrics are undefined\n", log.read_text())
+
+
+def test_train_routes_warnings_after_the_run_log_exists():
+    # The handler binds sys.stderr when it is created, so it must come after the Logger.
+    src = (SOURCE.parents[1] / "train.py").read_text()
+    assert src.index("dnnlib.util.Logger(file_name=") < src.index("training_loop.log_python_warnings()")

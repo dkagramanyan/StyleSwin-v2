@@ -5,6 +5,18 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-22
+
+### Removed
+- **The startup combra smoke test.** Rank 0 alone ran `self_test(image_metrics=True,
+  strict=True)` while the other ranks waited; on an offline node its backbone loading
+  stalled past the 10-minute NCCL watchdog and killed the run. The reference precompute
+  still loads the backbones on all ranks together, with its failure handling unchanged.
+
+### Changed
+- **combra pinned to v0.25.1.** The backbones load from the `download_models.sh` cache
+  with no network access; a missing file fails fast when `HF_HUB_OFFLINE=1`.
+
 ## [0.8.0] - 2026-10-22
 
 ### Changed

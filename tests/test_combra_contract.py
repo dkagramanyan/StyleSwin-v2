@@ -27,7 +27,6 @@ REQUIRED = [
     ("combra.metrics.distributed", "distributed_metrics"),
     ("combra.metrics.distributed", "gather_generated"),
     ("combra.metrics.distributed", "precompute_reference"),
-    ("combra.metrics", "self_test"),
     ("combra.io", "write_hparams"),
 ]
 
@@ -76,7 +75,6 @@ def test_combra_exports_symbol(module, name):
 def test_combra_import_block_resolves():
     # The exact imports the training loop performs. Guarded there, unguarded here.
     from combra.io import write_hparams  # noqa: F401
-    from combra.metrics import self_test  # noqa: F401
     from combra.metrics.distributed import (  # noqa: F401
         all_ranks_ok,
         distributed_metrics,

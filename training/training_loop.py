@@ -556,20 +556,6 @@ def training_loop(
     # ------------------------------------------------------------------ combra reference.
     combra_metrics = combra_metrics and num_fid_samples > 0   # --num-fid-samples 0 disables eval
     combra_installed = importlib.util.find_spec('combra') is not None
-    if combra_metrics and combra_installed and rank == 0 and reference_u8_set is not None:
-        # strict=True is the point: the plain self_test() this used to call defaults to
-        # image_metrics=False, so it never touched InceptionV3 / CLIP / DINOv2 and a
-        # missing CLIP download surfaced only as a whole run logging nan for
-        # combra_fid / combra_cmmd / combra_fd_dinov2. images= scores the real
-        # reference slice rather than synthetic grains.
-        try:
-            from combra.metrics import self_test
-            sample = np.stack([reference_u8_set[i][0]
-                               for i in range(min(4, len(reference_u8_set)))])
-            self_test(images=sample, device=device, image_metrics=True, strict=True)
-        except Exception as e:
-            print(f'[combra] smoke test failed: {e}', flush=True)
-
     combra_ref = None
     combra_ref_ok = True
     if combra_metrics and combra_installed and (reference_u8_set is not None):

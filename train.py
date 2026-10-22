@@ -21,6 +21,7 @@ Example (single stage, conditional, 2 GPUs):
         --kimg 25000 --snap 50
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -170,6 +171,28 @@ def _dataset_info(data_path, lmdb, size, cond):
 
 #----------------------------------------------------------------------------
 
+def _require_backbones(opts):
+    """First check of a training start: the image-metric backbone weights are on disk.
+
+    Runs in the launcher, before the dataset is read and before any GPU process or process
+    group exists. Only the local caches are read (no network), so an offline node with a
+    missing file fails here at once instead of hanging in the first download. Skipped when
+    the combra metrics will not run; without combra installed the training loop warns and
+    trains on, as before.
+    """
+    if not (opts.combra_metrics and opts.num_fid_samples > 0 and not opts.lmdb):
+        return
+    if importlib.util.find_spec('combra') is None:
+        return
+    from combra.metrics import require_backbones
+    try:
+        files = require_backbones()
+    except RuntimeError as err:
+        raise click.ClickException(str(err)) from err
+    print(f'Backbone weights found (download_models.sh): {", ".join(files)}', flush=True)
+
+#----------------------------------------------------------------------------
+
 @click.command()
 # Required.
 @click.option('--outdir',      help='Where to save the results', metavar='DIR',       required=True)
@@ -220,6 +243,7 @@ def _dataset_info(data_path, lmdb, size, cond):
 @click.option('--use-checkpoint', help='Gradient checkpointing in G', metavar='BOOL', type=bool, default=False, show_default=True)
 def main(**kwargs):
     opts = dnnlib.EasyDict(kwargs)
+    _require_backbones(opts)
 
     # Apply a per-resolution preset (--cfg). Explicit CLI flags take precedence over it.
     if opts.cfg is not None:

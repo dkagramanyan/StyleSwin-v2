@@ -7,6 +7,14 @@ are documented here. The format follows [Keep a Changelog](https://keepachangelo
 
 ## [0.8.1] - 2026-10-22
 
+### Added
+- **Backbone weights are the first check of a training start.** With combra metrics on
+  (combra installed, `--num-fid-samples` > 0, not `--lmdb`), `styleswin-train` calls
+  `combra.metrics.require_backbones()` before reading the dataset or spawning any GPU
+  process; a missing InceptionV3 / CLIP / DINOv2 file exits non-zero with the list and
+  `download_models.sh` named, rather than training without metrics. Success logs
+  `Backbone weights found (download_models.sh): fid, cmmd, fd_dinov2`.
+
 ### Removed
 - **The startup combra smoke test.** Rank 0 alone ran `self_test(image_metrics=True,
   strict=True)` while the other ranks waited; on an offline node its backbone loading

@@ -27,6 +27,7 @@ REQUIRED = [
     ("combra.metrics.distributed", "distributed_metrics"),
     ("combra.metrics.distributed", "gather_generated"),
     ("combra.metrics.distributed", "precompute_reference"),
+    ("combra.metrics", "require_backbones"),
     ("combra.io", "write_hparams"),
 ]
 
@@ -75,6 +76,7 @@ def test_combra_exports_symbol(module, name):
 def test_combra_import_block_resolves():
     # The exact imports the training loop performs. Guarded there, unguarded here.
     from combra.io import write_hparams  # noqa: F401
+    from combra.metrics import require_backbones  # noqa: F401
     from combra.metrics.distributed import (  # noqa: F401
         all_ranks_ok,
         distributed_metrics,
@@ -189,3 +191,65 @@ def test_generate_local_shard_matches_per_batch_denorm(conditional):
     ref = _denorm_to_uint8(G(z[idx], c[idx] if conditional else None)[0].numpy())
     assert out.dtype == np.uint8 and out.shape == (3, 3, 2, 2)
     assert np.array_equal(out, ref)
+
+
+class _Reached(Exception):
+    """Raised by the stand-in for the step after the backbone check."""
+
+
+def _train_with_backbones(monkeypatch, tmp_path, backbones, *flags):
+    # train.main up to its first step after the backbone check: the dataset read is
+    # replaced by a stub that stops the run, so nothing past it can happen.
+    pytest.importorskip("torch")
+    import combra.metrics
+    from click.testing import CliRunner
+
+    import train
+
+    calls = []
+
+    def require_backbones():
+        calls.append(1)
+        return backbones()
+
+    def dataset_info(*args):
+        raise _Reached
+
+    monkeypatch.setattr(combra.metrics, "require_backbones", require_backbones)
+    monkeypatch.setattr(train, "_dataset_info", dataset_info)
+    monkeypatch.setattr(train, "launch_training", dataset_info)
+    args = ["--outdir", str(tmp_path / "runs"), "--data", str(tmp_path), "--gpus", "1", *flags]
+    return CliRunner().invoke(train.main, args), calls
+
+
+def _missing():
+    raise RuntimeError("metric backbone weights are not downloaded -- run the model repo's "
+                       "download_models.sh first. Missing:\n  fid: pt_inception")
+
+
+@requires_combra
+def test_train_aborts_first_when_backbones_are_missing(monkeypatch, tmp_path):
+    # No --batch-gpu and no --cfg: the backbone check must fire before even that check.
+    result, calls = _train_with_backbones(monkeypatch, tmp_path, _missing)
+    assert calls == [1]
+    assert result.exit_code != 0 and not isinstance(result.exception, _Reached)
+    assert "download_models.sh" in result.output and "fid: pt_inception" in result.output
+    assert not (tmp_path / "runs").exists()
+
+
+@requires_combra
+def test_train_logs_found_backbones_then_continues(monkeypatch, tmp_path):
+    def found():
+        return {"fid": "a", "cmmd": "b", "fd_dinov2": "c"}
+
+    result, calls = _train_with_backbones(monkeypatch, tmp_path, found, "--batch-gpu", "1")
+    assert calls == [1] and isinstance(result.exception, _Reached)
+    assert "Backbone weights found (download_models.sh): fid, cmmd, fd_dinov2" in result.output
+
+
+@requires_combra
+@pytest.mark.parametrize("flags", [("--combra-metrics", "False"), ("--num-fid-samples", "0"),
+                                   ("--lmdb", "True", "--augment", "False")])
+def test_train_skips_backbone_check_without_metrics(monkeypatch, tmp_path, flags):
+    result, calls = _train_with_backbones(monkeypatch, tmp_path, _missing, "--batch-gpu", "1", *flags)
+    assert calls == [] and isinstance(result.exception, _Reached)

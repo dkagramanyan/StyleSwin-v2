@@ -85,7 +85,9 @@ The metrics pull InceptionV3 / CLIP / DINOv2 backbones on first use;
 `bash download_models.sh` prefetches and caches them for offline nodes (wget/curl + git,
 no Python; `MODEL_CACHE=/path bash download_models.sh` caches somewhere other than
 `~/.cache`, then point the jobs at it with `TORCH_HOME=$MODEL_CACHE/torch` and
-`HF_HOME=$MODEL_CACHE/huggingface`). StyleSwin itself has no pretrained weights.
+`HF_HOME=$MODEL_CACHE/huggingface`). With combra metrics on, `styleswin-train` first checks
+that these files are cached and exits naming `download_models.sh` if any is missing.
+StyleSwin itself has no pretrained weights.
 
 ## Data preparation
 
